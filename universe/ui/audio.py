@@ -161,10 +161,10 @@ class AudioController(QObject):
     def stop_recording(self) -> None:
         if not self.recorder.recording:
             return
-        path = self.recorder.stop()
         if self.live is not None:
             self.live.stop()
-        self.recorder.monitor = self.live = None
+        self.recorder.monitor = self.live = None  # detach first: the audio callback stays minimal while stopping
+        path = self.recorder.stop()
         lecture, self.recording_lecture = self.recording_lecture, None
         self.recordingChanged.emit(False)
         if path is None or not path.exists():
@@ -222,6 +222,7 @@ class AudioController(QObject):
 
     def shutdown(self) -> None:
         self.stop_recording()
+        self.recorder.wait_closed()
         self.player.stop()
 
 

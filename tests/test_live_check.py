@@ -166,6 +166,50 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(len(fed), 1)
 
 
+class RecorderStopTests(unittest.TestCase):
+    """stream.stop() once hung inside CoreAudio and froze the app on Stop."""
+
+    def test_stop_returns_and_saves_even_if_the_stream_hangs(self):
+        import threading
+        import time
+        import wave
+
+        from universe.services import audio_recorder
+
+        path = Path(tempfile.mkdtemp()) / "rec.wav"
+        recorder = AudioRecorder()
+        wav = wave.open(str(path), "wb")
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(RATE)
+        recorder._wav, recorder.path = wav, path
+        block = np.full((RATE, 1), 2000, dtype=np.int16)
+        recorder._callback(block, RATE, None, None)
+        released = threading.Event()
+
+        class HangingStream:
+            active = True
+
+            def stop(self):
+                released.wait(10)  # CoreAudio never returns
+
+            def close(self):
+                pass
+
+        recorder._stream = HangingStream()
+        started = time.monotonic()
+        self.assertEqual(recorder.stop(), path)
+        self.assertLess(time.monotonic() - started, 2.5)
+        self.assertFalse(recorder.recording)
+        with wave.open(str(path), "rb") as saved:
+            self.assertEqual(saved.getnframes(), RATE)
+            peak = np.abs(np.frombuffer(saved.readframes(RATE), "<i2").astype(int)).max()
+        self.assertGreater(peak, 2000 * 4)  # normalised: the file was finished, not left half-written
+        with self.assertRaises(audio_recorder.sd.CallbackStop):
+            recorder._callback(block, RATE, None, None)  # the callback ends the stream itself
+        released.set()
+
+
 class ToolbarTextTests(unittest.TestCase):
     def test_summary_and_details(self):
         from universe.ui.audio import live_details, live_summary

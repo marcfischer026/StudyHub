@@ -38,6 +38,8 @@ class AudioRecorder:
         self._peak_sample = 0  # largest absolute int16 sample, for normalising on stop
         self.path: Path | None = None
         self.monitor = None  # optional live_check.LiveMonitor fed with every block
+        self._stopping = False  # tells the callback to end the stream from the audio side
+        self._closing: threading.Thread | None = None  # stream shutdown of the previous recording
 
     @staticmethod
     def available() -> bool:
@@ -92,6 +94,9 @@ class AudioRecorder:
             raise RecorderUnavailable("sounddevice/PortAudio is not available.")
         if self.recording:
             raise RuntimeError("Already recording.")
+        if self._closing is not None:
+            self._closing.join(timeout=3)  # PortAudio calls must not overlap
+        self._stopping = False
         device = self._device_index(device_name)
         path.parent.mkdir(parents=True, exist_ok=True)
         wav = wave.open(str(path), "wb")
@@ -119,6 +124,8 @@ class AudioRecorder:
         self._started_at = time.monotonic()
 
     def _callback(self, indata, frames, time_info, status) -> None:
+        if self._stopping:
+            raise sd.CallbackStop
         if self._paused_at is not None:
             self.level = 0.0
             return
@@ -144,11 +151,19 @@ class AudioRecorder:
             self._paused_at = None
 
     def stop(self) -> Path | None:
+        """Finish the recording. Never blocks the caller for long: on macOS,
+        ``stream.stop()`` can hang inside CoreAudio while the callback is busy
+        (it froze the app), so the callback ends the stream itself, the file is
+        finalised here, and the stream is shut down on a background thread."""
         if self._stream is None:
             return None
-        self._stream.stop()
-        self._stream.close()
-        self._stream = None
+        stream, self._stream = self._stream, None
+        self._stopping = True
+        deadline = time.monotonic() + 1.0
+        while stream.active and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self._closing = threading.Thread(target=_shutdown, args=(stream,), name="audio-stream-close", daemon=True)
+        self._closing.start()
         with self._lock:
             if self._wav is not None:
                 self._wav.close()
@@ -158,6 +173,20 @@ class AudioRecorder:
         if self.path is not None:
             normalize_wav(self.path, self._peak_sample)
         return self.path
+
+
+    def wait_closed(self, timeout: float = 2.0) -> None:
+        """Let the background stream shutdown finish, e.g. before the app quits."""
+        if self._closing is not None:
+            self._closing.join(timeout)
+
+
+def _shutdown(stream) -> None:
+    try:
+        stream.stop()
+        stream.close()
+    except Exception:  # device already gone: nothing left to release
+        pass
 
 
 TARGET_PEAK = int(32767 * 0.89)  # -1 dBFS
