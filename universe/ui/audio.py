@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
 from ..config import LANGUAGES, Settings, installed_models
 from ..services.audio_player import AudioPlayer, duration, needs_playback_copy
 from ..services.audio_recorder import AudioRecorder
+from ..services import live_check
+from ..services.live_check import LiveMonitor, LiveStatus
 from ..services.timestamps import format_seconds
 from ..storage import Lecture
 
@@ -66,6 +68,7 @@ class AudioController(QObject):
         self.player = AudioPlayer()
         self.lecture: Lecture | None = None
         self.recording_lecture: Lecture | None = None
+        self.live: LiveMonitor | None = None
         self._silence_warned = False
 
         self.timer = QTimer(self, interval=100)
@@ -148,6 +151,10 @@ class AudioController(QObject):
             return False
         self.recording_lecture = lecture
         self._silence_warned = False
+        language = lecture.subject.meta.get("language") or self.settings.whisper_language
+        self.live = LiveMonitor(self.settings, language=language)
+        self.recorder.monitor = self.live
+        self.live.start()
         self.recordingChanged.emit(True)
         return True
 
@@ -155,6 +162,9 @@ class AudioController(QObject):
         if not self.recorder.recording:
             return
         path = self.recorder.stop()
+        if self.live is not None:
+            self.live.stop()
+        self.recorder.monitor = self.live = None
         lecture, self.recording_lecture = self.recording_lecture, None
         self.recordingChanged.emit(False)
         if path is None or not path.exists():
@@ -244,6 +254,14 @@ class RecordControls(QWidget):
         self.mic_menu.aboutToShow.connect(self._fill_mic_menu)
         self.mic_btn.setMenu(self.mic_menu)
 
+        self.live = QToolButton()
+        self.live.setObjectName("liveCheck")
+        self.live.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.live.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.live_menu = QMenu(self)
+        self.live_menu.aboutToShow.connect(self._fill_live_menu)
+        self.live.setMenu(self.live_menu)
+
         self.warning = QPushButton("⚠ No sound — fix microphone")
         self.warning.setObjectName("warningButton")
         self.warning.clicked.connect(self._show_mic_help)
@@ -253,7 +271,7 @@ class RecordControls(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         self.record_btn.setFixedWidth(118)
-        for w in (self.record_btn, self.pause_btn, self.time, self.level, self.mic_btn, self.warning):
+        for w in (self.record_btn, self.pause_btn, self.time, self.level, self.live, self.mic_btn, self.warning):
             layout.addWidget(w)
         layout.addStretch()
 
@@ -274,6 +292,8 @@ class RecordControls(QWidget):
         self.pause_btn.setVisible(recording)
         self.time.setVisible(recording)
         self.level.setVisible(recording)
+        self.live.setVisible(recording)
+        self.live.setText(LIVE_ICONS["listening"] + " Listening…")
         if not recording:
             self.warning.hide()
             self.level.setValue(0)
@@ -284,6 +304,31 @@ class RecordControls(QWidget):
             self.time.setText(format_seconds(rec.elapsed()) + ("  paused" if rec.paused else ""))
             self.level.setValue(int(rec.level * 100))
             self.pause_btn.setText("▶" if rec.paused else "❚❚")
+            if self.audio.live is not None and not rec.paused:
+                status = self.audio.live.status
+                self.live.setText(live_summary(status, rec.elapsed()))
+                self.live.setToolTip(live_details(status, rec.elapsed()) + "\n\nClick for what the computer heard.")
+
+    def _fill_live_menu(self) -> None:
+        self.live_menu.clear()
+        live = self.audio.live
+        if live is None:
+            return
+        status = live.status
+        for line in live_details(status, self.audio.recorder.elapsed()).splitlines():
+            self.live_menu.addAction(line).setEnabled(False)
+        if status.history:
+            self.live_menu.addSeparator()
+            self.live_menu.addAction("What the computer heard (compare with your ears):").setEnabled(False)
+            for heard in reversed(status.history[-8:]):
+                text = _clip(heard.text) or "(nothing recognised)"
+                if heard.text and heard.state in ("silence", "listening"):
+                    text += "  — no clear speech then, probably made up"
+                icon = LIVE_ICONS.get(heard.state, "⚪")
+                self.live_menu.addAction(f"{icon} {format_seconds(heard.at)}  {text}").setEnabled(False)
+        elif not self.audio.settings.live_check:
+            self.live_menu.addSeparator()
+            self.live_menu.addAction("Live transcription check is off (Settings).").setEnabled(False)
 
     def _fill_mic_menu(self) -> None:
         self.mic_menu.clear()
@@ -577,6 +622,43 @@ class RecordingsPanel(QWidget):
         self.transcribe_btn.setEnabled(not active and self.audio.current is not None)
         if not active:
             self.refresh()
+
+
+LIVE_ICONS = {
+    "listening": "⚪",
+    "silence": "⚪",
+    "no_lecturer": "⚪",
+    "clear": "🟢",
+    "okay": "🟡",
+    "quiet": "🔴",
+    "neighbours": "🟠",
+}
+HEARD_FRESH_S = 90  # older live checks no longer describe the room
+
+
+def live_summary(status: LiveStatus, now: float) -> str:
+    """Toolbar text, e.g. "🟢 Lecturer clear"."""
+    return f"{LIVE_ICONS.get(status.state, '⚪')} {status.message}"
+
+
+def live_details(status: LiveStatus, now: float) -> str:
+    lines = [status.message]
+    if status.snr_db is not None:
+        who = "Lecturer" if status.voices else "Speech"
+        lines.append(f"{who} {status.snr_db:.0f} dB above the room background (clear ≥ {live_check.CLEAR_DB:.0f} dB)")
+    if status.neighbour_db is not None and status.voice_db is not None:
+        lines.append(f"Other voices {status.neighbour_db - status.voice_db:+.0f} dB compared with the lecturer")
+    if not status.voices:
+        lines.append("Install the speaker model to tell the lecturer from neighbours (README → Speaker recognition).")
+    heard = status.heard
+    if heard is not None and now - heard.at <= HEARD_FRESH_S:
+        made_up = " (no clear speech then, probably made up)" if heard.text and heard.state in ("silence", "listening") else ""
+        lines.append(f"Heard {max(0, round(now - heard.at))} s ago: “{_clip(heard.text) or '…'}”{made_up}")
+    return "\n".join(lines)
+
+
+def _clip(text: str, limit: int = 110) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _short_name(path: Path) -> str:

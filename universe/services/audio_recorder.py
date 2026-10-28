@@ -37,6 +37,7 @@ class AudioRecorder:
         self.peak_level = 0.0  # loudest level this recording; stays ~0 if the mic is blocked
         self._peak_sample = 0  # largest absolute int16 sample, for normalising on stop
         self.path: Path | None = None
+        self.monitor = None  # optional live_check.LiveMonitor fed with every block
 
     @staticmethod
     def available() -> bool:
@@ -130,6 +131,8 @@ class AudioRecorder:
         with self._lock:
             if self._wav is not None:
                 self._wav.writeframes(indata.tobytes())
+        if self.monitor is not None:
+            self.monitor.feed(indata)
 
     def pause(self) -> None:
         if self.recording and self._paused_at is None:

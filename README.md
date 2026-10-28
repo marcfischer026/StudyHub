@@ -131,6 +131,24 @@ A laptop microphone also catches what your neighbours say. UniVerse sorts every 
 
 In the **Transcript** panel exam-relevant lines are highlighted ★, questions ❓ and answers 💬 tinted, private talk 🔇 greyed. Filter by *Exam-relevant*, *Questions & answers*, *Hide private talk* … and right-click (several lines at once) to correct a label — your corrections are never overwritten. **Private talk is left out of the Claude export, the search index and the training data;** exam-relevant lines are listed first in the export.
 
+### Live check while recording
+
+You can't tell how the laptop mic hears the room compared to your ears. While you record, a status next to the level meter tells you, so you can ask the lecturer to speak up (or move closer) before the lecture is lost:
+
+| Status | Meaning |
+|---|---|
+| 🟢 Lecturer clear | the lecturer's voice stands ≥ 12 dB above the room background (speech band 300–3400 Hz) |
+| 🟡 Lecturer okay — a bit quiet | 9–12 dB: transcription usually still works, but it's borderline |
+| 🔴 Lecturer too quiet — ask to speak up | < 9 dB: whisper starts getting most words wrong |
+| 🟠 Neighbours are louder than the lecturer | other voices are ≥ 6 dB louder than the lecturer |
+| ⚪ Lecturer not heard recently / No speech stands out from the noise | nothing usable in the last 20 s |
+
+Click the status to see **what the computer heard**. Every 45 s to 3 min, whisper transcribes the last 15 seconds so you can compare its text with what you heard. Checks run more often while the sound is doubtful and less often while everything is clear. Text recorded while no clear speech stood out is marked *probably made up*, because whisper invents phrases such as "Vielen Dank." from pure noise. For the same reason no "% understood" figure is shown: on noise, whisper reported 93–99 % confidence for invented text. Telling the lecturer apart from neighbours needs the speaker model (next section); without it the status rates any speech.
+
+**Battery:** loudness and voice tracking use under 1 % of one CPU core. Only the whisper check uses the GPU, for about 3 s per check. It pauses under the same battery rules as background AI work (`battery_pause_below`, `only_when_charging`). Set `live_check` to `false` in `settings.json` to turn the text check off; the coloured status keeps working.
+
+The thresholds were calibrated on 11 chunks of a real lecture recorded with a laptop mic, with steady background noise added. All clean chunks, which whisper transcribed correctly, measured 12–20 dB. Of the chunks where whisper got most words wrong, all but one measured ≤ 9 dB or showed no speech at all; the exception contained a loud nearby voice.
+
 ### Speaker recognition (optional)
 
 The classifier works much better when it knows **who** spoke. After transcription UniVerse measures each line's loudness and, if a small voice model is installed, groups the lines by voice. The voice that talks most is the **lecturer** 🎓; others are *Speaker 2*, *Speaker 3* … 👥. Both the local AI and the Claude export see these tags (`S1.4 [Lecturer] …`, `S1.9 [Speaker 2, near mic] …`). The tags are only hints: a line counts as private only if its *wording* is unrelated to the course, and when in doubt it is kept as lecture content, because losing course material is worse than keeping some chatter. *Near mic* marks lines much louder than the rest of the recording, which usually means a student next to the laptop rather than the distant lecturer. Everything runs offline. Without the model you only get loudness, the same way sorting is skipped when no local AI server is running.
@@ -250,6 +268,7 @@ universe/
 │   ├── audio_player.py    pygame.mixer playback with seek
 │   ├── transcriber.py     whisper.cpp CLI wrapper
 │   ├── speakers.py        loudness + offline speaker recognition (sherpa-onnx)
+│   ├── live_check.py      live "can the mic hear the lecturer?" status while recording
 │   ├── timestamps.py      [▶ HH:MM:SS] helpers
 │   ├── pdf_tools.py       PyMuPDF text extraction
 │   ├── vector_index.py    LanceDB per-subject index
