@@ -6,11 +6,18 @@ so the player tracks the seek offset itself to expose an absolute position.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import wave
 from pathlib import Path
 
+from ..config import cache_dir
+from .transcriber import convert_to_wav
+
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
+PLAYABLE = {".wav", ".mp3", ".ogg", ".flac"}  # what pygame.mixer.music decodes
+KEEP_COPIES = 3  # playback copies of 16 kHz WAV take ~115 MB per hour of audio
 
 try:
     import pygame
@@ -39,9 +46,10 @@ class AudioPlayer:
 
     def load(self, path: Path) -> None:
         self._ensure_mixer()
-        pygame.mixer.music.load(str(path))
-        self.path = path
-        self.duration = _duration(path)
+        source = playable_path(path)
+        pygame.mixer.music.load(str(source))
+        self.path = path  # the lecture's file; ``source`` may be a playback copy
+        self.duration = _duration(source)
         self._offset = 0.0
         self._paused_pos = None
 
@@ -100,6 +108,30 @@ class AudioPlayer:
             pygame.mixer.music.unload()
         self.path = None
         self.duration = 0.0
+
+
+def needs_playback_copy(path: Path) -> bool:
+    return path.suffix.lower() not in PLAYABLE
+
+
+def playable_path(path: Path) -> Path:
+    """``path`` itself, or a cached WAV copy for formats pygame cannot decode
+    (AAC ``.m4a`` from Voice Memos). The copy is made once per file version."""
+    if not needs_playback_copy(path):
+        return path
+    stat = path.stat()
+    key = hashlib.sha1(f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:16]
+    cache = cache_dir("playback")
+    copy = cache / f"{key}.wav"
+    if copy.exists():
+        os.utime(copy)  # mark as recently used
+    else:
+        partial = copy.with_suffix(".part.wav")
+        convert_to_wav(path, partial)
+        partial.replace(copy)
+        for old in sorted(cache.glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)[KEEP_COPIES:]:
+            old.unlink(missing_ok=True)
+    return copy
 
 
 def _duration(path: Path) -> float:

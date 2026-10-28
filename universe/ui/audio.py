@@ -18,6 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -35,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import LANGUAGES, Settings, installed_models
-from ..services.audio_player import AudioPlayer
+from ..services.audio_player import AudioPlayer, needs_playback_copy
 from ..services.audio_recorder import AudioRecorder
 from ..services.timestamps import format_seconds
 from ..storage import Lecture
@@ -104,11 +105,18 @@ class AudioController(QObject):
             if AudioPlayer.available():
                 self.player.unload()
         else:
+            # .m4a and similar are converted once for playback (a few seconds per hour of audio)
+            busy = needs_playback_copy(path)
+            if busy:
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
                 self.player.load(path)
             except Exception as exc:
                 self.error.emit(f"Cannot play {path.name}: {exc}")
                 self.player.unload()
+            finally:
+                if busy:
+                    QApplication.restoreOverrideCursor()
         self.currentChanged.emit()
 
     def import_files(self, paths: list[Path]) -> None:

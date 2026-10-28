@@ -102,7 +102,7 @@ def _is_whisper_ready_wav(path: Path) -> bool:
         return False
 
 
-def _convert_to_wav(source: Path, target: Path) -> None:
+def convert_to_wav(source: Path, target: Path) -> None:
     if shutil.which("afconvert"):
         cmd = ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(source), str(target)]
     elif shutil.which("ffmpeg"):
@@ -134,7 +134,7 @@ def transcribe(
         wav = audio
         if not _is_whisper_ready_wav(audio):
             wav = tmp_dir / "input.wav"
-            _convert_to_wav(audio, wav)
+            convert_to_wav(audio, wav)
 
         out_base = tmp_dir / "out"
         cmd = [

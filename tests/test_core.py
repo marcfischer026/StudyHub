@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +19,7 @@ _tmp = tempfile.TemporaryDirectory()
 os.environ["UNIVERSE_DATA_DIR"] = _tmp.name
 
 from universe.professors import ProfessorProfile, ProfessorStore  # noqa: E402
-from universe.services import claude_bridge, timestamps  # noqa: E402
+from universe.services import audio_player, claude_bridge, timestamps  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
 from universe.services.vector_index import HashingEmbedder, SubjectIndex  # noqa: E402
 from universe.storage import Workspace, safe_name  # noqa: E402
@@ -190,6 +193,43 @@ class DatasetTests(unittest.TestCase):
         rows = dataset.build_dataset("Dataset Subject")
         self.assertEqual(len(rows), 1 + 3 + 1)  # notes chunk + quizzes + flashcard
         self.assertNotIn("▶", rows[0]["messages"][2]["content"])
+
+
+@unittest.skipUnless(shutil.which("afconvert"), "needs macOS afconvert")
+class PlaybackCopyTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        wav = self.dir / "tone.wav"
+        with wave.open(str(wav), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(16_000)
+            out.writeframes(b"\x00\x10" * 16_000)  # 1 s
+        self.m4a = self.dir / "Memo.m4a"
+        subprocess.run(["afconvert", "-f", "m4af", "-d", "aac", str(wav), str(self.m4a)], check=True)
+        self.wav = wav
+
+    def test_m4a_gets_a_cached_wav_copy(self):
+        copy = audio_player.playable_path(self.m4a)
+        self.assertEqual(copy.suffix, ".wav")
+        self.assertNotEqual(copy.parent, self.m4a.parent)  # not listed among the lecture's audio
+        with wave.open(str(copy), "rb") as wav:
+            self.assertAlmostEqual(wav.getnframes() / wav.getframerate(), 1.0, delta=0.1)
+        mtime = copy.stat().st_mtime_ns
+        self.assertEqual(audio_player.playable_path(self.m4a), copy)
+        self.assertGreaterEqual(copy.stat().st_mtime_ns, mtime)  # reused, not converted again
+
+    def test_playable_formats_are_used_directly(self):
+        self.assertEqual(audio_player.playable_path(self.wav), self.wav)
+
+    def test_old_copies_are_pruned(self):
+        copies = []
+        for n in range(audio_player.KEEP_COPIES + 2):
+            memo = self.dir / f"Memo {n}.m4a"
+            shutil.copy(self.m4a, memo)
+            copies.append(audio_player.playable_path(memo))
+        kept = [c for c in copies if c.exists()]
+        self.assertEqual(kept, copies[-audio_player.KEEP_COPIES :])
 
 
 if __name__ == "__main__":

@@ -38,6 +38,13 @@ def models_dir() -> Path:
     return path
 
 
+def cache_dir(name: str) -> Path:
+    """Files UniVerse can rebuild at any time, e.g. playback copies of imported audio."""
+    path = data_root() / "cache" / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def settings_path() -> Path:
     return data_root() / "settings.json"
 
