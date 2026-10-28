@@ -12,11 +12,10 @@
 from __future__ import annotations
 
 import subprocess
-import wave
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -36,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import LANGUAGES, Settings, installed_models
-from ..services.audio_player import AudioPlayer, needs_playback_copy
+from ..services.audio_player import AudioPlayer, duration, needs_playback_copy
 from ..services.audio_recorder import AudioRecorder
 from ..services.timestamps import format_seconds
 from ..storage import Lecture
@@ -419,7 +418,9 @@ class PlayerBar(QWidget):
 
 
 class RecordingsPanel(QWidget):
-    """Dock: list of the lecture's audio, import, transcription settings."""
+    """Dock: list of the lecture's audio, import, delete, transcription settings."""
+
+    deleteRequested = Signal(list)  # list[Path] the user chose to delete
 
     def __init__(self, audio: AudioController, ensure_lecture, parent=None):
         """``ensure_lecture(name_hint)`` returns the open lecture or creates one."""
@@ -427,11 +428,21 @@ class RecordingsPanel(QWidget):
         self.audio = audio
         self.ensure_lecture = ensure_lecture
         self.list = QListWidget()
+        self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # ⌘/⇧-click to delete several
         self.list.itemClicked.connect(lambda item: audio.select(item.data(ROLE)))
         self.list.itemDoubleClicked.connect(lambda item: (audio.select(item.data(ROLE)), audio.seek(0)))
+        self.list.itemSelectionChanged.connect(self._update_delete)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._context_menu)
+        for key in (QKeySequence.StandardKey.Delete, QKeySequence(Qt.Key.Key_Backspace)):
+            shortcut = QShortcut(key, self.list, context=Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(self._delete)
 
         import_btn = QPushButton("Import audio…")
         import_btn.clicked.connect(self._import)
+        self.delete_btn = QPushButton("Delete…")
+        self.delete_btn.setToolTip("Move the selected recordings and their transcripts to the Trash (⌫)")
+        self.delete_btn.clicked.connect(self._delete)
         self.transcribe_btn = QPushButton("Transcribe")
         self.transcribe_btn.setObjectName("primaryButton")
         self.transcribe_btn.clicked.connect(self._transcribe)
@@ -457,6 +468,7 @@ class RecordingsPanel(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(import_btn)
+        buttons.addWidget(self.delete_btn)
         buttons.addStretch()
         buttons.addWidget(self.transcribe_btn)
         layout = QVBoxLayout(self)
@@ -485,7 +497,7 @@ class RecordingsPanel(QWidget):
         transcribed = {p.stem for p in lecture.transcripts()} if lecture else set()
         for path in self.audio.files():
             mark = "✓ transcribed" if path.stem in transcribed else "not transcribed"
-            item = QListWidgetItem(f"{_short_name(path)}\n{_clock(_duration(path))} · {mark}")
+            item = QListWidgetItem(f"{_short_name(path)}\n{_clock(duration(path))} · {mark}")
             item.setData(ROLE, path)
             self.list.addItem(item)
         self.hint.setText("" if self.list.count() else "Recordings and imported audio for this lecture appear here.")
@@ -518,6 +530,30 @@ class RecordingsPanel(QWidget):
             if item.data(ROLE) == self.audio.current:
                 self.list.setCurrentItem(item)
         self.transcribe_btn.setEnabled(self.audio.current is not None and self.progress.isHidden())
+        self._update_delete()
+
+    def selected_paths(self) -> list[Path]:
+        return [item.data(ROLE) for item in self.list.selectedItems()]
+
+    def _update_delete(self) -> None:
+        self.delete_btn.setEnabled(bool(self.list.selectedItems()))
+
+    def _context_menu(self, pos) -> None:
+        item = self.list.itemAt(pos)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.list.setCurrentItem(item)
+        menu = QMenu(self)
+        menu.addAction("Transcribe", lambda: self.audio.transcribeRequested.emit(item.data(ROLE)))
+        menu.addSeparator()
+        count = len(self.list.selectedItems())
+        menu.addAction("Move to Trash…" if count == 1 else f"Move {count} recordings to Trash…", self._delete)
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def _delete(self) -> None:
+        if self.list.selectedItems():
+            self.deleteRequested.emit(self.selected_paths())
 
     def _import(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -551,11 +587,3 @@ def _short_name(path: Path) -> str:
 def _clock(seconds: float) -> str:
     text = format_seconds(seconds)
     return text[3:] if text.startswith("00:") else text
-
-
-def _duration(path: Path) -> float:
-    try:
-        with wave.open(str(path), "rb") as wav:
-            return wav.getnframes() / float(wav.getframerate())
-    except (wave.Error, OSError, EOFError):
-        return 0.0

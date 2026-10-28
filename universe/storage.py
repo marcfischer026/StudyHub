@@ -152,6 +152,12 @@ class Lecture:
             js.unlink()
         return target
 
+    def audio_bundle(self, audio: Path) -> list[Path]:
+        """The recording and the transcript files made from it — what deleting it removes."""
+        transcripts = self.dir("transcripts")
+        extra = [transcripts / f"{audio.stem}{suffix}" for suffix in (".json", ".txt")]
+        return [audio, *(p for p in extra if p.exists())]
+
     def migrate_recording_names(self) -> bool:
         """Rename old ``recording_YYYYMMDD_HHMMSS`` files to the readable scheme.
         Returns True if anything was renamed."""

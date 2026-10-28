@@ -7,7 +7,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QTimer
+from PySide6.QtCore import QByteArray, QFile, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         self.audio.recordingChanged.connect(self._on_recording_changed)
         self.audio.recordingFinished.connect(self._on_recording_finished)
         self.audio.transcribeRequested.connect(self.transcribe)
+        self.recordings.deleteRequested.connect(self.delete_recordings)
         self.audio.silenceDetected.connect(
             lambda: self.statusBar().showMessage("⚠ The microphone is silent — click the warning in the toolbar for help.")
         )
@@ -378,6 +379,46 @@ class MainWindow(QMainWindow):
         self.sidebar.refresh(select=lecture)  # opens it via lectureSelected
         self.statusBar().showMessage(f"Created lecture “{name}” in {subject.name} — rename it any time (right-click).", 8000)
         return lecture
+
+    def delete_recordings(self, paths: list[Path]) -> None:
+        """Move recordings and their transcripts to the macOS Trash, after asking."""
+        lecture = self.lecture
+        if lecture is None or not paths:
+            return
+        if self.audio.recording and self.audio.recorder.path in paths:
+            QMessageBox.information(self, "Delete recording", "Stop the recording before deleting it.")
+            return
+        names = "\n".join(f"• {p.stem}" for p in paths)
+        transcribed = sum(len(lecture.audio_bundle(p)) > 1 for p in paths)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Delete recording")
+        box.setText(f"Move {'this recording' if len(paths) == 1 else f'{len(paths)} recordings'} to the Trash?")
+        box.setInformativeText(
+            names
+            + ("\n\nTheir transcripts and sorting labels go with them." if transcribed else "")
+            + "\nYou can restore them from the Trash in Finder."
+        )
+        delete_btn = box.addButton("Move to Trash", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is not delete_btn:
+            return
+
+        for path in paths:
+            job = self.jobs.find(("transcribe", str(path)))
+            if job is not None:
+                self.jobs.cancel(job)
+        if self.audio.current in paths:
+            self.audio.release()
+        failed = [f.name for p in paths for f in lecture.audio_bundle(p) if not QFile.moveToTrash(str(f))]
+        if failed:
+            QMessageBox.warning(self, "Delete recording", "Could not move to the Trash:\n" + "\n".join(failed))
+        self.audio.filesChanged.emit()
+        self.transcript.refresh()
+        self.schedule_index(lecture)
+        moved = sum(not p.exists() for p in paths)
+        self.statusBar().showMessage(f"Moved {moved} recording{'s' * (moved != 1)} to the Trash.", 6000)
 
     def _on_recording_changed(self, recording: bool) -> None:
         if recording:

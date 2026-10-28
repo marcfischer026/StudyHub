@@ -51,6 +51,18 @@ class StorageTests(unittest.TestCase):
             self.assertTrue((lecture.path / sub).is_dir())
         self.assertEqual([lec.name for lec in subject.lectures()], ["Week 1: NPV"])
 
+    def test_audio_bundle_includes_its_transcripts_only(self):
+        lecture = self.ws.create_subject("Mathe").create_lecture("Week 1")
+        audio = lecture.dir("audio") / "Memo.m4a"
+        other = lecture.dir("audio") / "Memo (1).m4a"
+        for path in (audio, other):
+            path.write_bytes(b"x")
+        for name in ("Memo.json", "Memo.txt", "Memo (1).json"):
+            (lecture.dir("transcripts") / name).write_text("{}")
+        bundle = lecture.audio_bundle(audio)
+        self.assertEqual([p.name for p in bundle], ["Memo.m4a", "Memo.json", "Memo.txt"])
+        self.assertEqual([p.name for p in lecture.audio_bundle(other)], ["Memo (1).m4a", "Memo (1).json"])
+
     def test_duplicates_rejected(self):
         self.ws.create_subject("Physics")
         with self.assertRaises(FileExistsError):
@@ -221,6 +233,11 @@ class PlaybackCopyTests(unittest.TestCase):
 
     def test_playable_formats_are_used_directly(self):
         self.assertEqual(audio_player.playable_path(self.wav), self.wav)
+
+    def test_duration_of_m4a_without_converting(self):
+        self.assertAlmostEqual(audio_player.duration(self.m4a), 1.0, delta=0.1)
+        self.assertAlmostEqual(audio_player.duration(self.wav), 1.0, delta=0.01)
+        self.assertEqual(audio_player.duration(self.dir / "missing.m4a"), 0.0)
 
     def test_old_copies_are_pruned(self):
         copies = []

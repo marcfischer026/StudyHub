@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import shutil
+import subprocess
 import wave
 from pathlib import Path
 
@@ -49,7 +52,7 @@ class AudioPlayer:
         source = playable_path(path)
         pygame.mixer.music.load(str(source))
         self.path = path  # the lecture's file; ``source`` may be a playback copy
-        self.duration = _duration(source)
+        self.duration = duration(source)
         self._offset = 0.0
         self._paused_pos = None
 
@@ -134,14 +137,34 @@ def playable_path(path: Path) -> Path:
     return copy
 
 
-def _duration(path: Path) -> float:
+_durations: dict[tuple[str, int, int], float] = {}
+
+
+def duration(path: Path) -> float:
+    """Length in seconds, 0.0 if unknown. Non-WAV files are measured once per file version."""
     if path.suffix.lower() == ".wav":
         try:
             with wave.open(str(path), "rb") as wav:
                 return wav.getnframes() / float(wav.getframerate())
-        except (wave.Error, OSError):
+        except (wave.Error, OSError, EOFError):
             pass
-    if pygame is not None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return 0.0
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key not in _durations:
+        _durations[key] = _measure(path)
+    return _durations[key]
+
+
+def _measure(path: Path) -> float:
+    if shutil.which("afinfo"):  # macOS: reads the header, ~50 ms even for hours of AAC
+        result = subprocess.run(["afinfo", str(path)], capture_output=True, text=True)
+        match = re.search(r"estimated duration: ([\d.]+) sec", result.stdout)
+        if match:
+            return float(match.group(1))
+    if pygame is not None and pygame.mixer.get_init():
         try:
             return pygame.mixer.Sound(str(path)).get_length()
         except pygame.error:
