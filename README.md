@@ -63,7 +63,7 @@ UniVerse uses the best model it finds in `~/.universe_data/models/` automaticall
 
 Quiet recordings are raised to a normal volume automatically when you stop recording (up to +18 dB).
 
-Other settings in `~/.universe_data/settings.json`:
+All of these can be changed in the Settings dialog (`⌘,`, under *Preferences…* in the app menu); they are stored in `~/.universe_data/settings.json`:
 
 | Key | Default | Meaning |
 |---|---|---|

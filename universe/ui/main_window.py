@@ -34,6 +34,7 @@ from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, 
 from .note_editor import NoteEditor
 from .pdf_viewer import PdfViewer
 from .professor_dialog import AssignProfessorDialog, ProfessorManager
+from .settings_dialog import SettingsDialog
 from .sidebar import Sidebar
 from .transcript_panel import TranscriptPanel
 from .jobs import ActivityIndicator, JobManager
@@ -210,6 +211,7 @@ class MainWindow(QMainWindow):
         add(file_menu, "Import Audio…", self.recordings._import)
         file_menu.addSeparator()
         add(file_menu, "Reveal in Finder", self._reveal)
+        add(file_menu, "Settings…", self._open_settings, QKeySequence.StandardKey.Preferences)
         add(file_menu, "Quit", self.close, QKeySequence.StandardKey.Quit)
 
         notes_menu = bar.addMenu("&Notes")
@@ -606,6 +608,15 @@ class MainWindow(QMainWindow):
     def _reveal(self) -> None:
         target = self.lecture.path if self.lecture else self.subject.path if self.subject else self.workspace.root
         subprocess.run(["open", str(target)])
+
+    def _open_settings(self) -> None:
+        if SettingsDialog(self.settings, self).exec():
+            # panels that show a setting read it once; bring them up to date
+            self.recordings.auto.setChecked(self.settings.auto_transcribe)
+            self.recordings._fill_speech_settings()
+            self.record_controls._update_mic_tooltip()
+            self.activity._apply_battery_rules()
+            self.activity.refresh()
 
     def _check_whisper(self) -> None:
         problems = transcriber.check_setup(self.settings)
