@@ -40,10 +40,13 @@ Course context (from the slides): {context}
 
 A tag before a segment comes from voice recognition: [Lecturer] is the voice that talks most in
 the recording; [Speaker 2], [Speaker 3], … are other voices, usually students. "near mic" means
-much louder than usual — someone sitting next to the laptop, almost never the lecturer. Use the
-tags: lecture content comes from the lecturer; another voice is a question, an answer or off_topic,
-and near-mic chatter is off_topic unless it is clearly about the course. The tags are automatic and
-can be wrong — when the wording plainly says otherwise, trust the wording.
+much louder than usual, often someone sitting next to the laptop. The tags are automatic and
+sometimes wrong, so they are only a hint: a [Lecturer] segment is very unlikely to be off_topic,
+and a segment from another voice may be off_topic — but only if its WORDING is unrelated to the
+course. Never mark a segment off_topic just because of its tag.
+
+off_topic segments are deleted from the notes, so missing course content is much worse than
+keeping some chatter. When in doubt, choose lecture (or question/answer), not off_topic.
 
 Set "exam": true when the speaker says it is relevant for the exam, will be tested, must be
 remembered, or stresses it is especially important.

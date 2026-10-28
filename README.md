@@ -133,7 +133,7 @@ In the **Transcript** panel exam-relevant lines are highlighted ★, questions �
 
 ### Speaker recognition (optional)
 
-The classifier works much better when it knows **who** spoke. After transcription UniVerse measures each line's loudness and, if a small voice model is installed, groups the lines by voice. The voice that talks most is the **lecturer** 🎓; others are *Speaker 2*, *Speaker 3* … 👥. Both the local AI and the Claude export see these tags (`S1.4 [Lecturer] …`, `S1.9 [Speaker 2, near mic] …`). *Near mic* marks lines much louder than the rest of the recording, which usually means a student next to the laptop rather than the distant lecturer. Everything runs offline. Without the model you only get loudness, the same way sorting is skipped when no local AI server is running.
+The classifier works much better when it knows **who** spoke. After transcription UniVerse measures each line's loudness and, if a small voice model is installed, groups the lines by voice. The voice that talks most is the **lecturer** 🎓; others are *Speaker 2*, *Speaker 3* … 👥. Both the local AI and the Claude export see these tags (`S1.4 [Lecturer] …`, `S1.9 [Speaker 2, near mic] …`). The tags are only hints: a line counts as private only if its *wording* is unrelated to the course, and when in doubt it is kept as lecture content, because losing course material is worse than keeping some chatter. *Near mic* marks lines much louder than the rest of the recording, which usually means a student next to the laptop rather than the distant lecturer. Everything runs offline. Without the model you only get loudness, the same way sorting is skipped when no local AI server is running.
 
 ```bash
 .venv/bin/pip install sherpa-onnx

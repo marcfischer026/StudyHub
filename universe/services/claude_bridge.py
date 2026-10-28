@@ -78,8 +78,10 @@ exam material for the lecture **{lecture_name}**.
    speaker tag from automatic voice recognition: `[Lecturer]` is the voice that
    talks most, `[Speaker 2]` etc. are other voices (usually students), and
    `near mic` marks someone much louder than usual, i.e. sitting next to the
-   laptop. Use the tags as strong hints, but trust the wording when it plainly
-   disagrees. Ignore off-topic
+   laptop. The tags are automatic and can be wrong: use them only as hints and
+   decide off_topic by the wording, never by the tag alone. Off-topic lines are
+   dropped from the student's material, so when in doubt leave a line out of
+   `segment_labels` (it stays lecture content). Ignore off-topic
    segments for everything else you write.
 
 **Respond with exactly one JSON code block and nothing else.** It must parse as
