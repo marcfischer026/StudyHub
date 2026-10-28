@@ -96,6 +96,8 @@ class Settings:
     local_llm_url: str = ""  # OpenAI-compatible base URL, e.g. http://localhost:1234/v1; "" = probe usual ports
     local_llm_model: str = ""  # "" = first chat model the server lists
     local_llm_unload_after: int = 300  # seconds without AI work before the model is unloaded; 0 = keep loaded
+    speaker_model: str = ""  # speaker-embedding .onnx in models_dir(); "" = best found (needs sherpa-onnx)
+    speaker_threshold: float = 0.2  # cosine similarity above which two voices count as one (tuned for TitaNet-small)
     embedding_model: str = "all-MiniLM-L6-v2"  # used only if sentence-transformers is installed
     window_state: str = ""  # base64 QMainWindow state
     window_geometry: str = ""

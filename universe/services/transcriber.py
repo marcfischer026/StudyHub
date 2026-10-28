@@ -44,6 +44,9 @@ class Segment:
     exam: bool = False  # flagged as exam-relevant
     note: str = ""  # why: exam cue found, classifier's reason, …
     source: str = ""  # who labelled it: "rules" | "local" | "claude" | "manual"
+    # Who spoke (see services/speakers.py). Empty = unknown (no speaker model installed).
+    speaker: str = ""  # "lecturer" | "speaker_2" | … | "other" (set by hand)
+    loudness: float | None = None  # RMS level in dBFS; students next to the mic are loud
 
     @property
     def private(self) -> bool:
@@ -114,6 +117,35 @@ def convert_to_wav(source: Path, target: Path) -> None:
         raise TranscriptionError(f"Audio conversion failed: {result.stderr.strip()}")
 
 
+def identify_speakers(segments: list[Segment], wav: Path, settings: Settings, control: "JobControl | None" = None) -> bool:
+    """Loudness and speaker labels (optional extra): never lets transcription fail."""
+    from . import speakers
+
+    try:
+        return speakers.annotate(segments, wav, settings, checkpoint=control.checkpoint if control else None)
+    except Cancelled:
+        raise
+    except Exception:  # missing/broken model, odd audio: keep the transcript without speakers
+        return False
+
+
+def identify_speakers_in(transcript: Transcript, audio: Path, settings: Settings, control: "JobControl | None" = None) -> bool:
+    """Add loudness/speakers to a transcript made before speaker recognition existed.
+    Returns True if anything was set (the caller saves)."""
+    if not audio.exists() or any(s.speaker or s.loudness is not None for s in transcript.segments):
+        return False
+    with tempfile.TemporaryDirectory(prefix="universe-speakers-") as tmp:
+        wav = audio
+        if not _is_whisper_ready_wav(audio):
+            wav = Path(tmp) / "input.wav"
+            try:
+                convert_to_wav(audio, wav)
+            except TranscriptionError:
+                return False
+        identify_speakers(transcript.segments, wav, settings, control)
+    return any(s.loudness is not None for s in transcript.segments)
+
+
 def transcribe(
     audio: Path,
     settings: Settings,
@@ -173,16 +205,16 @@ def transcribe(
             raise TranscriptionError("whisper.cpp failed:\n" + "\n".join(log_tail))
 
         raw = json.loads(out_base.with_suffix(".json").read_text(encoding="utf-8"))
-
-    segments = [
-        Segment(
-            start=item["offsets"]["from"] / 1000.0,
-            end=item["offsets"]["to"] / 1000.0,
-            text=item["text"].strip(),
-        )
-        for item in raw.get("transcription", [])
-        if item.get("text", "").strip() and not _NOISE_RE.match(item["text"])
-    ]
+        segments = [
+            Segment(
+                start=item["offsets"]["from"] / 1000.0,
+                end=item["offsets"]["to"] / 1000.0,
+                text=item["text"].strip(),
+            )
+            for item in raw.get("transcription", [])
+            if item.get("text", "").strip() and not _NOISE_RE.match(item["text"])
+        ]
+        identify_speakers(segments, wav, settings, control)
     if progress:
         progress(100)
     return Transcript(audio=audio.name, segments=segments)

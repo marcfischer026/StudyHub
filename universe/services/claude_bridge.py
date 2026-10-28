@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..professors import ProfessorProfile
 from ..storage import Lecture
-from . import pdf_tools, relevance
+from . import pdf_tools, relevance, speakers
 from .timestamps import make_stamp
 from .transcriber import Transcript
 
@@ -74,7 +74,12 @@ exam material for the lecture **{lecture_name}**.
    (private chatter, unrelated talk, noise), a student **question** about the
    content, or the **answer** to one — plus every segment where the lecturer
    signals exam relevance (`"exam": true`, keep its category `lecture`).
-   Segments you do not list count as normal lecture content. Ignore off-topic
+   Segments you do not list count as normal lecture content. Lines may carry a
+   speaker tag from automatic voice recognition: `[Lecturer]` is the voice that
+   talks most, `[Speaker 2]` etc. are other voices (usually students), and
+   `near mic` marks someone much louder than usual, i.e. sitting next to the
+   laptop. Use the tags as strong hints, but trust the wording when it plainly
+   disagrees. Ignore off-topic
    segments for everything else you write.
 
 **Respond with exactly one JSON code block and nothing else.** It must parse as
@@ -94,13 +99,14 @@ def _transcript_section(lecture: Lecture) -> str:
     for t_no, path in enumerate(lecture.transcripts(), start=1):
         transcript = Transcript.load(path)
         lines = []
+        near = speakers.near_mic(transcript)
         for index, seg in enumerate(transcript.segments):
             if seg.private:
                 hidden += 1
                 continue
             tag = f"[{relevance.segment_id(t_no, index)} {make_stamp(seg.start)[1:-1]}]"
             kind = {"question": " (question)", "answer": " (answer)"}.get(seg.category, "")
-            lines.append(f"{tag}{kind} {seg.text}")
+            lines.append(f"{tag}{kind} {speakers.prompt_tag(seg, near[index])}{seg.text}")
             if seg.exam:
                 exam_lines.append(f"- {tag} {seg.text}")
         parts.append(f"### {transcript.audio}\n\n" + ("\n".join(lines) or "_Only private talk._"))

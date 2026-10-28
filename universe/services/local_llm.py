@@ -14,7 +14,7 @@ import urllib.request
 from typing import Callable
 
 from ..config import Settings
-from . import lmstudio
+from . import lmstudio, speakers
 from .jobcontrol import JobControl
 from .relevance import CATEGORIES, expand_ids, segment_id
 
@@ -37,6 +37,13 @@ The laptop microphone also caught students chatting next to it. Classify EVERY s
   things (tech, plans, politics, the recording itself, …), greetings, noise
 
 Course context (from the slides): {context}
+
+A tag before a segment comes from voice recognition: [Lecturer] is the voice that talks most in
+the recording; [Speaker 2], [Speaker 3], … are other voices, usually students. "near mic" means
+much louder than usual — someone sitting next to the laptop, almost never the lecturer. Use the
+tags: lecture content comes from the lecturer; another voice is a question, an answer or off_topic,
+and near-mic chatter is off_topic unless it is clearly about the course. The tags are automatic and
+can be wrong — when the wording plainly says otherwise, trust the wording.
 
 Set "exam": true when the speaker says it is relevant for the exam, will be tested, must be
 remembered, or stresses it is especially important.
@@ -131,13 +138,14 @@ def classify(
     url, model = find_server(settings)
     labels: dict[str, dict] = {}
     segments = list(enumerate(transcript.segments))
+    near = speakers.near_mic(transcript)
     batches = [segments[i : i + BATCH] for i in range(0, len(segments), BATCH)] or [[]]
     for n, batch in enumerate(batches, start=1):
         if not batch:
             break
         if control:
             control.checkpoint()  # pause / cancel between batches
-        lines = "\n".join(f"{segment_id(transcript_no, i)} {seg.text}" for i, seg in batch)
+        lines = "\n".join(f"{segment_id(transcript_no, i)} {speakers.prompt_tag(seg, near[i])}{seg.text}" for i, seg in batch)
         prompt = PROMPT.format(subject=subject, context=context or "none", segments=lines)
         reply = chat(url, model, prompt, ttl=settings.local_llm_unload_after)
         ids_in_batch = {segment_id(transcript_no, i) for i, _ in batch}

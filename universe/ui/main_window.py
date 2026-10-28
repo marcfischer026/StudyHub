@@ -497,7 +497,9 @@ class MainWindow(QMainWindow):
             targets = [(n, p) for n, p in enumerate(paths, start=1) if not only or p.stem == only]
             for done_count, (t_no, path) in enumerate(targets):
                 transcript = transcriber.Transcript.load(path)
-                if relevance.apply_exam_cues(transcript):
+                audio = lecture.dir("audio") / transcript.audio
+                found_speakers = transcriber.identify_speakers_in(transcript, audio, self.settings, control)
+                if relevance.apply_exam_cues(transcript) or found_speakers:
                     transcript.save(path.parent)
 
                 def step(pct, k=done_count):

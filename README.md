@@ -131,6 +131,35 @@ A laptop microphone also catches what your neighbours say. UniVerse sorts every 
 
 In the **Transcript** panel exam-relevant lines are highlighted ★, questions ❓ and answers 💬 tinted, private talk 🔇 greyed. Filter by *Exam-relevant*, *Questions & answers*, *Hide private talk* … and right-click (several lines at once) to correct a label — your corrections are never overwritten. **Private talk is left out of the Claude export, the search index and the training data;** exam-relevant lines are listed first in the export.
 
+### Speaker recognition (optional)
+
+The classifier works much better when it knows **who** spoke. After transcription UniVerse measures each line's loudness and, if a small voice model is installed, groups the lines by voice. The voice that talks most is the **lecturer** 🎓; others are *Speaker 2*, *Speaker 3* … 👥. Both the local AI and the Claude export see these tags (`S1.4 [Lecturer] …`, `S1.9 [Speaker 2, near mic] …`). *Near mic* marks lines much louder than the rest of the recording, which usually means a student next to the laptop rather than the distant lecturer. Everything runs offline. Without the model you only get loudness, the same way sorting is skipped when no local AI server is running.
+
+```bash
+.venv/bin/pip install sherpa-onnx
+```
+
+```bash
+curl -L -o ~/.universe_data/models/nemo_en_titanet_small.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx
+```
+
+`sherpa-onnx` ships Apple Silicon wheels with ONNX Runtime built in (no PyTorch, no Hugging Face token). It handles roughly 20 minutes of audio in 5 seconds. Older transcripts get speakers the next time you press *Sort with local AI*. In the Transcript panel, filter by *Lecturer only* / *Other speakers*. To fix mistakes, right-click a line and pick *The lecturer said this*, *Someone else said this*, or *Speaker N is the lecturer (whole recording)*.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `speaker_model` | `""` (best `.onnx` found) | speaker-embedding model in `~/.universe_data/models/` or an absolute path |
+| `speaker_threshold` | `0.2` | cosine similarity above which two lines count as the same voice; raise it if different people get merged, lower it if one person is split into several speakers |
+
+Model choice was measured on 20 minutes of a German maths lecture (310 lines) mixed with 6 minutes of two students chatting next to the laptop (62 lines). The table shows how much speaking time ended up labelled *lecturer*:
+
+| Model | Lecturer kept | Chatter labelled lecturer |
+|---|---|---|
+| NeMo TitaNet-small, threshold 0.2 | 97.9 % | 0 % |
+| 3D-Speaker ERes2Net, threshold 0.2 | 99.8 % | 6.4 % |
+| WeSpeaker ResNet34, any threshold | — | could not separate the voices |
+
+The chatter came from separate recordings, so room and distance differed more than they would inside one lecture. Treat these numbers as an upper bound. In a recording with no lecturer at all, "lecturer" simply means whoever talks most.
+
 ## Background AI work and battery
 
 Transcription (whisper.cpp) and sorting (local AI) run in one queue, one job at a time, so they never fight over the GPU. The field at the bottom right of the window shows what is running, its progress, CPU / GPU load and the battery, e.g. `⚙ Sorting BWL 2026-10-28 15.30 · 37% · CPU 12% GPU 88% · 🔋57%`.
@@ -220,6 +249,7 @@ universe/
 │   ├── audio_recorder.py  sounddevice → 16 kHz WAV
 │   ├── audio_player.py    pygame.mixer playback with seek
 │   ├── transcriber.py     whisper.cpp CLI wrapper
+│   ├── speakers.py        loudness + offline speaker recognition (sherpa-onnx)
 │   ├── timestamps.py      [▶ HH:MM:SS] helpers
 │   ├── pdf_tools.py       PyMuPDF text extraction
 │   ├── vector_index.py    LanceDB per-subject index

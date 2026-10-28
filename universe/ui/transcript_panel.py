@@ -1,7 +1,8 @@
 """Transcript dock: whisper.cpp segments with relevance labels.
 
 Click a line to hear it. Exam-relevant lines are highlighted (★), questions and
-answers marked, private talk greyed out — and right-click corrects any label.
+answers marked, private talk greyed out, other voices than the lecturer's tagged
+(👥) — and right-click corrects any label or speaker.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..services import relevance
+from ..services import relevance, speakers
 from ..services.timestamps import make_stamp
 from ..services.transcriber import Transcript
 from ..storage import Lecture
@@ -35,7 +36,15 @@ QUESTION_BG = QColor(47, 111, 237, 35)
 ICONS = {"question": "❓ ", "answer": "💬 ", "off_topic": "🔇 "}
 SOURCE_NAMES = {"rules": "exam cue", "local": "local AI", "claude": "Claude", "manual": "you"}
 
-FILTERS = ("All", "★ Exam-relevant", "Questions & answers", "Hide private talk", "Private talk only")
+FILTERS = (
+    "All",
+    "★ Exam-relevant",
+    "Questions & answers",
+    "Hide private talk",
+    "Private talk only",
+    "🎓 Lecturer only",
+    "👥 Other speakers",
+)
 
 
 class TranscriptPanel(QWidget):
@@ -139,7 +148,8 @@ class TranscriptPanel(QWidget):
     def _style_item(self, item: QListWidgetItem, index: int) -> None:
         seg = self.transcript.segments[index]
         star = "★ " if seg.exam else ""
-        item.setText(f"{star}{ICONS.get(seg.category, '')}{make_stamp(seg.start)}  {seg.text}")
+        voice = "" if not seg.speaker else "🎓 " if seg.speaker == speakers.LECTURER else f"👥 {speakers.speaker_name(seg.speaker)}: "
+        item.setText(f"{star}{ICONS.get(seg.category, '')}{make_stamp(seg.start)}  {voice}{seg.text}")
         font = QFont(item.font())
         font.setItalic(seg.private)
         font.setBold(seg.exam)
@@ -156,7 +166,10 @@ class TranscriptPanel(QWidget):
             details.append(seg.note)
         if seg.source:
             details.append(f"by {SOURCE_NAMES.get(seg.source, seg.source)}")
-        item.setToolTip(" · ".join(details) + "\nRight-click to change.")
+        voice = [speakers.speaker_name(seg.speaker)] if seg.speaker else []
+        if seg.loudness is not None:
+            voice.append(f"{seg.loudness:.0f} dB")
+        item.setToolTip(" · ".join(details) + ("\nVoice: " + " · ".join(voice) if voice else "") + "\nRight-click to change.")
 
     def _apply_filter(self) -> None:
         if self.transcript is None:
@@ -171,6 +184,8 @@ class TranscriptPanel(QWidget):
                 "Questions & answers": seg.category in ("question", "answer"),
                 "Hide private talk": not seg.private,
                 "Private talk only": seg.private,
+                "🎓 Lecturer only": seg.speaker == speakers.LECTURER,
+                "👥 Other speakers": bool(seg.speaker) and seg.speaker != speakers.LECTURER,
             }.get(mode, True)
             item.setHidden(not show or (bool(needle) and needle not in seg.text.lower()))
 
@@ -205,7 +220,32 @@ class TranscriptPanel(QWidget):
         menu.addSeparator()
         for category, icon in (("lecture", "📖 "), ("question", "❓ "), ("answer", "💬 "), ("off_topic", "🔇 ")):
             menu.addAction(icon + relevance.CATEGORY_LABELS[category], lambda c=category: self._set(items, category=c))
+        menu.addSeparator()
+        menu.addAction("🎓 The lecturer said this", lambda: self._set_speaker(items, speakers.LECTURER))
+        menu.addAction("👥 Someone else said this", lambda: self._set_speaker(items, speakers.OTHER))
+        voices = {s.speaker for s in segs}
+        if len(voices) == 1 and (voice := voices.pop()) not in ("", speakers.LECTURER, speakers.OTHER):
+            menu.addAction(
+                f"🎓 {speakers.speaker_name(voice)} is the lecturer (whole recording)",
+                lambda: self._make_lecturer(voice),
+            )
         menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def _set_speaker(self, items: list[QListWidgetItem], speaker: str) -> None:
+        for item in items:
+            self.transcript.segments[item.data(ROLE)[2]].speaker = speaker
+        self._save_speakers()
+
+    def _make_lecturer(self, speaker: str) -> None:
+        speakers.make_lecturer(self.transcript, speaker)
+        self._save_speakers()
+
+    def _save_speakers(self) -> None:
+        for i in range(self.list.count()):
+            self._style_item(self.list.item(i), self.list.item(i).data(ROLE)[2])
+        self.transcript.save(self.path.parent)
+        self._apply_filter()
+        self.labelsChanged.emit(self.lecture)
 
     def _set(self, items: list[QListWidgetItem], category: str | None = None, exam: bool | None = None) -> None:
         for item in items:
