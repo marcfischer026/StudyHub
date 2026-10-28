@@ -36,12 +36,32 @@ def server_root(base_url: str) -> str:
     return url[:-3] if url.endswith("/v1") else url
 
 
-def loaded_instances(root: str, timeout: float = 1.5) -> list[Instance] | None:
-    """Loaded model instances, or ``None`` if the server is not LM Studio / not reachable."""
+def _models(root: str, timeout: float) -> list[dict] | None:
     try:
         with urllib.request.urlopen(f"{root}/api/v1/models", timeout=timeout) as response:
-            models = json.load(response).get("models", [])
+            return json.load(response).get("models", [])
     except (OSError, ValueError):
+        return None
+
+
+def chat_models(root: str, timeout: float = 1.5) -> list[str] | None:
+    """Keys of the chat models (type "llm"), loaded ones first, or ``None`` if not LM Studio.
+
+    ``/v1/models`` also lists models that cannot chat, such as LM Studio's built-in
+    speech model ``phonon-40m-multilingual``; picking one of those fails with "No models loaded".
+    """
+    models = _models(root, timeout)
+    if models is None:
+        return None
+    llms = [m for m in models if m.get("type") == "llm" and m.get("key")]
+    llms.sort(key=lambda m: not m.get("loaded_instances"))
+    return [m["key"] for m in llms]
+
+
+def loaded_instances(root: str, timeout: float = 1.5) -> list[Instance] | None:
+    """Loaded model instances, or ``None`` if the server is not LM Studio / not reachable."""
+    models = _models(root, timeout)
+    if models is None:
         return None
     instances = []
     for model in models:

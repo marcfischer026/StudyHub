@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,6 +167,39 @@ class LocalLLMTests(unittest.TestCase):
         settings = Settings(local_llm_url="http://127.0.0.1:9/v1")
         with self.assertRaises(local_llm.LocalLLMUnavailable):
             local_llm.find_server(settings)
+
+    def test_lm_studio_skips_models_that_cannot_chat(self):
+        # LM Studio's /v1/models lists its speech model first; only /api/v1/models says it is no LLM.
+        responses = {
+            "http://lms/v1/models": {"data": [{"id": "phonon-40m-multilingual"}, {"id": "qwen3-14b-mlx"}]},
+            "http://lms/api/v1/models": {
+                "models": [
+                    {"key": "qwen3-14b-mlx", "type": "llm", "loaded_instances": []},
+                    {"key": "text-embedding-nomic-embed-text-v1.5", "type": "embedding"},
+                ]
+            },
+        }
+
+        class FakeResponse:
+            def __init__(self, url):
+                self.data = json.dumps(responses[url]).encode()
+
+            def read(self, *args):
+                return self.data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        original = urllib.request.urlopen
+        urllib.request.urlopen = lambda url, timeout=None: FakeResponse(url)
+        try:
+            found = local_llm.find_server(Settings(local_llm_url="http://lms/v1"))
+        finally:
+            urllib.request.urlopen = original
+        self.assertEqual(found, ("http://lms/v1", "qwen3-14b-mlx"))
 
 
 if __name__ == "__main__":

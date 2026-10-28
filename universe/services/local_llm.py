@@ -14,6 +14,7 @@ import urllib.request
 from typing import Callable
 
 from ..config import Settings
+from . import lmstudio
 from .jobcontrol import JobControl
 from .relevance import CATEGORIES, expand_ids, segment_id
 
@@ -66,6 +67,9 @@ def find_server(settings: Settings) -> tuple[str, str]:
         except (OSError, ValueError, KeyError):
             continue
         chat_models = [m for m in models if "embed" not in m.lower()]
+        lmstudio_llms = lmstudio.chat_models(lmstudio.server_root(url))
+        if lmstudio_llms is not None:  # LM Studio knows which models can chat
+            chat_models = [m for m in lmstudio_llms if m in models]
         if settings.local_llm_model:
             if settings.local_llm_model in models:
                 return url, settings.local_llm_model
