@@ -1,0 +1,32 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# --- Secrets: never commit these -------------------------------------------
+# Put API keys in .env (copy .env.example). Only the example is tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+credentials*.json
+.modal.toml
+
+# Local tool settings that may contain personal paths or tokens
+.claude/settings.local.json
+.vscode/
+.idea/
+
+# UniVerse data lives in ~/.universe_data (outside the repo). If you point
+# UNIVERSE_DATA_DIR into the project for testing, keep it out of git:
+.universe_data/
+universe_data/

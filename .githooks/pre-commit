@@ -1,0 +1,25 @@
+#!/bin/sh
+# Blocks commits that contain something that looks like an API key or private key.
+# Enabled per clone with:  git config core.hooksPath .githooks
+# False alarm? Commit once with:  git commit --no-verify
+
+pattern='(sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|sk-proj-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|hf_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(api[_-]?key|secret|token|password)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9_./+-]{16,}["'"'"'])'
+
+# Secret-looking files that slipped past .gitignore
+files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^|/)(\.env(\..*)?|.*\.pem|.*\.key|credentials.*\.json|\.modal\.toml)$' | grep -v '\.env\.example$')
+if [ -n "$files" ]; then
+    echo "✋ Commit blocked: these files usually contain secrets:"
+    echo "$files" | sed 's/^/   /'
+    echo "   Remove them with: git restore --staged <file>"
+    exit 1
+fi
+
+# Added lines that look like keys
+hits=$(git diff --cached -U0 --diff-filter=ACM | grep -E '^\+' | grep -v '^+++' | grep -nE "$pattern")
+if [ -n "$hits" ]; then
+    echo "✋ Commit blocked: this looks like an API key or private key:"
+    echo "$hits" | cut -c1-160 | sed 's/^/   /'
+    echo "   Move it to .env (git-ignored) or the macOS Keychain, then commit again."
+    exit 1
+fi
+exit 0

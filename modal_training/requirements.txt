@@ -1,0 +1,3 @@
+# Only needed on the machine that launches training; the GPU image installs
+# torch/transformers/peft/trl itself (see `image` in train_model.py).
+modal>=1.0

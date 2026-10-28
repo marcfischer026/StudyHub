@@ -1,0 +1,33 @@
+# UniVerse desktop app — Python 3.11+ on Apple Silicon macOS.
+# Install:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# UI
+PySide6>=6.7
+
+# Slides / PDF rendering and text extraction
+PyMuPDF>=1.24
+
+# Audio: recording (PortAudio wheels are bundled on macOS) and playback.
+# pygame-ce is the maintained drop-in fork of pygame (same `import pygame`,
+# same pygame.mixer API) and ships wheels for current Python versions.
+# Classic `pygame` also works on Python <= 3.12 if you prefer it.
+sounddevice>=0.4.6
+pygame-ce>=2.4
+numpy>=1.26
+
+# CPU, GPU, memory and battery readings for the activity indicator
+psutil>=5.9
+
+# Local vector search
+lancedb>=0.13
+pyarrow>=15
+
+# Optional: better semantic search embeddings. Without it UniVerse uses a
+# built-in offline hashing embedder. The model downloads once (~90 MB), then
+# runs offline.
+# sentence-transformers>=3.0
+
+# Not on PyPI — install with Homebrew (Metal-accelerated whisper.cpp):
+#   brew install whisper-cpp
+#
+# Cloud fine-tuning scaffold has its own requirements: modal_training/requirements.txt
