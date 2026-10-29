@@ -80,7 +80,10 @@ class MainWindow(QMainWindow):
 
         # docks
         self.sidebar = Sidebar(self.workspace)
-        self.pdf = PdfViewer(ensure_lecture=self.ensure_lecture)
+        self.pdf = PdfViewer(lambda hint: (lecture := self.ensure_lecture(hint)) and lecture.dir("slides"))
+        # Past exams and exercise sheets belong to the whole subject, not one lecture.
+        self.exams = PdfViewer(lambda _hint: self._subject_folder("exams"), noun="past exams")
+        self.exercises = PdfViewer(lambda _hint: self._subject_folder("exercises"), noun="exercises")
         self.transcript = TranscriptPanel()
         self.ai = AIPanel(self.professors)
         self.recordings = RecordingsPanel(
@@ -95,6 +98,8 @@ class MainWindow(QMainWindow):
             ("transcript", "Transcript", self.transcript),
             ("ai", "AI Tutor", self.ai),
             ("recordings", "Recordings", self.recordings),
+            ("exams", "Past Exams", self.exams),
+            ("exercises", "Exercises", self.exercises),
         ):
             dock = QDockWidget(title, self)
             dock.setObjectName(f"dock_{key}")
@@ -209,7 +214,7 @@ class MainWindow(QMainWindow):
             self.removeDockWidget(dock)  # drop old tab groups so the arrangement is rebuilt cleanly
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, d["workspace"])
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d["slides"])
-        for key in ("ai", "transcript", "recordings"):
+        for key in ("exams", "exercises", "ai", "transcript", "recordings"):
             self.tabifyDockWidget(d["slides"], d[key])
         for dock in d.values():
             dock.show()
@@ -326,7 +331,9 @@ class MainWindow(QMainWindow):
             self.welcome.show_subject(self.subject)
             self.center.setCurrentWidget(self.welcome)
         self.notes.set_lecture(lecture)
-        self.pdf.set_lecture(lecture)
+        self.pdf.set_folder(lecture.dir("slides") if lecture else None)
+        self.exams.set_folder(self.subject.dir("exams") if self.subject else None)
+        self.exercises.set_folder(self.subject.dir("exercises") if self.subject else None)
         self.audio.set_lecture(lecture)
         self.transcript.set_lecture(lecture)
         self.ai.set_lecture(lecture)
@@ -369,6 +376,13 @@ class MainWindow(QMainWindow):
         lecture = self.ensure_lecture()
         if lecture is not None:
             self.audio.start_recording(lecture)
+
+    def _subject_folder(self, kind: str) -> Path | None:
+        subject = self.subject or self.sidebar.current_subject()
+        if subject is None:
+            QMessageBox.information(self, "Import", "Pick or create a subject in Subjects first.")
+            return None
+        return subject.dir(kind)
 
     def ensure_lecture(self, name_hint: str = "") -> Lecture | None:
         """The open lecture — or, when none is open, a new one so a recording or

@@ -5,6 +5,8 @@ Layout::
     ~/.universe_data/Subjects/<Subject>/
         subject.json
         .index/                      LanceDB vector store for the subject
+        exams/                       past exams (PDFs), shared by all lectures
+        exercises/                   exercise sheets (PDFs)
         Lectures/<Lecture>/
             lecture.json
             notes.md                 Markdown notes with [▶ HH:MM:SS] stamps
@@ -26,6 +28,7 @@ from pathlib import Path
 from . import config
 
 LECTURE_SUBDIRS = ("audio", "slides", "transcripts", "ai")
+SUBJECT_SUBDIRS = ("exams", "exercises")
 AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
 
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -232,13 +235,18 @@ class Lecture:
 
     def import_file(self, source: Path, kind: str) -> Path:
         """Copy an external file (PDF, audio) into this lecture."""
-        target = self.dir(kind) / source.name
-        stem, suffix, n = target.stem, target.suffix, 1
-        while target.exists():
-            target = target.with_name(f"{stem} ({n}){suffix}")
-            n += 1
-        shutil.copy2(source, target)
-        return target
+        return import_file(source, self.dir(kind))
+
+
+def import_file(source: Path, folder: Path) -> Path:
+    """Copy ``source`` into ``folder``, adding " (1)", " (2)"… if the name is taken."""
+    target = folder / source.name
+    stem, suffix, n = target.stem, target.suffix, 1
+    while target.exists():
+        target = target.with_name(f"{stem} ({n}){suffix}")
+        n += 1
+    shutil.copy2(source, target)
+    return target
 
 
 def _free_stem(folder: Path, stem: str, suffix: str) -> str:
@@ -274,6 +282,13 @@ class Subject:
     def short_name(self) -> str:
         """Abbreviation used in recording file names; set by the user or derived from the name."""
         return self.meta.get("short_name") or abbreviate(self.name)
+
+    def dir(self, kind: str) -> Path:
+        if kind not in SUBJECT_SUBDIRS:
+            raise ValueError(f"Unknown subject folder: {kind}")
+        path = self.path / kind
+        path.mkdir(exist_ok=True)
+        return path
 
     @property
     def lectures_dir(self) -> Path:

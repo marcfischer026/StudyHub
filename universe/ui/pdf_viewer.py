@@ -27,9 +27,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..storage import Lecture
+from ..storage import import_file
 
-EMPTY_TEXT = "No slides yet.\n\nClick “Import PDF…” or drag a PDF file here."
+EMPTY_TEXT = "No {noun} yet.\n\nClick “Import PDF…” or drag a PDF file here."
 PAGE_GAP = 12
 KEEP_RENDERED = 6  # pages beyond this distance from the viewport drop their pixmap
 
@@ -37,12 +37,15 @@ KEEP_RENDERED = 6  # pages beyond this distance from the viewport drop their pix
 class PdfViewer(QWidget):
     pdfImported = Signal(object)  # Path
 
-    def __init__(self, ensure_lecture: Callable[[str], Lecture | None], parent=None):
-        """``ensure_lecture(name_hint)`` returns the open lecture, creating one
-        (named after the PDF) when none is open, or ``None`` if the user cancels."""
+    def __init__(self, ensure_folder: Callable[[str], Path | None], noun: str = "slides", parent=None):
+        """Shows the PDFs in one folder. ``ensure_folder(name_hint)`` returns the
+        folder imports go to — e.g. creating a lecture named after the PDF when
+        none is open — or ``None`` if there is none (the user cancelled)."""
         super().__init__(parent)
-        self.lecture: Lecture | None = None
-        self.ensure_lecture = ensure_lecture
+        self.folder: Path | None = None
+        self.ensure_folder = ensure_folder
+        self.noun = noun
+        self.empty_text = EMPTY_TEXT.format(noun=noun)
         self.setAcceptDrops(True)
         self.doc: pymupdf.Document | None = None
         self.zoom = 1.0
@@ -90,7 +93,7 @@ class PdfViewer(QWidget):
         self.pages_layout.setSpacing(PAGE_GAP)
         self.pages_layout.setContentsMargins(PAGE_GAP, PAGE_GAP, PAGE_GAP, PAGE_GAP)
         self.pages_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.message = QLabel(EMPTY_TEXT, alignment=Qt.AlignmentFlag.AlignCenter, wordWrap=True)
+        self.message = QLabel(self.empty_text, alignment=Qt.AlignmentFlag.AlignCenter, wordWrap=True)
         self.message.setObjectName("muted")
         self.pages_layout.addWidget(self.message)
 
@@ -109,16 +112,18 @@ class PdfViewer(QWidget):
         layout.addLayout(nav)
         layout.addWidget(self.scroll, 1)
 
-    # --- lecture / files ----------------------------------------------------
+    # --- folder / files -----------------------------------------------------
 
-    def set_lecture(self, lecture: Lecture | None) -> None:
-        self.lecture = lecture
+    def set_folder(self, folder: Path | None) -> None:
+        if folder == self.folder:
+            return  # keep the open PDF and page, e.g. when switching lectures of one subject
+        self.folder = folder
         self.refresh_files()
 
     def refresh_files(self, select: Path | None = None) -> None:
         self.files.blockSignals(True)
         self.files.clear()
-        for pdf in self.lecture.pdfs() if self.lecture else []:
+        for pdf in sorted(self.folder.glob("*.pdf")) if self.folder and self.folder.is_dir() else []:
             self.files.addItem(pdf.name, str(pdf))
         if select is not None:
             self.files.setCurrentIndex(max(0, self.files.findData(str(select))))
@@ -132,23 +137,23 @@ class PdfViewer(QWidget):
             QTimer.singleShot(0, lambda: self.go_to_page(page))  # after the page column is laid out
 
     def import_pdf(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "Import slides", str(Path.home()), "PDF files (*.pdf)")
+        paths, _ = QFileDialog.getOpenFileNames(self, f"Import {self.noun}", str(Path.home()), "PDF files (*.pdf)")
         self.import_paths([Path(p) for p in paths])
 
     def import_paths(self, paths: list[Path]) -> None:
         pdfs = [p for p in paths if p.suffix.lower() == ".pdf" and p.is_file()]
         if not pdfs:
             return
-        lecture = self.ensure_lecture(pdfs[0].stem)
-        if lecture is None:
+        folder = self.ensure_folder(pdfs[0].stem)
+        if folder is None:
             return
-        self.lecture = lecture
+        self.folder = folder
         last = None
         for path in pdfs:
             try:
-                last = lecture.import_file(path, "slides")
+                last = import_file(path, folder)
             except OSError as exc:
-                QMessageBox.warning(self, "Import slides", f"Could not import {path.name}:\n{exc}")
+                QMessageBox.warning(self, f"Import {self.noun}", f"Could not import {path.name}:\n{exc}")
                 continue
             self.pdfImported.emit(last)
         if last:
@@ -186,7 +191,7 @@ class PdfViewer(QWidget):
             self.doc = None
         path = self.files.currentData()
         if not path:
-            self._show_message(EMPTY_TEXT)
+            self._show_message(self.empty_text)
             return
         try:
             self.doc = pymupdf.open(path)
