@@ -103,6 +103,7 @@ class Settings:
     embedding_model: str = "all-MiniLM-L6-v2"  # used only if sentence-transformers is installed
     window_state: str = ""  # base64 QMainWindow state
     window_geometry: str = ""
+    notes_visible: bool = True  # the central notes area isn't a dock, so saveState doesn't cover it
     last_subject: str = ""
     last_lecture: str = ""
     settings_version: int = 2

@@ -193,6 +193,7 @@ class LectureView(QWidget):
     """Lecture header, the note editor and the player bar."""
 
     assignProfessor = Signal()
+    closeRequested = Signal()
 
     def __init__(self, notes: NoteEditor, player: PlayerBar, professors: ProfessorStore, parent=None):
         super().__init__(parent)
@@ -209,10 +210,20 @@ class LectureView(QWidget):
         header.addWidget(self.title)
         header.addWidget(self.meta)
 
+        close = QPushButton("✕")
+        close.setFlat(True)
+        close.setFixedWidth(28)
+        close.setToolTip("Hide notes — reopen from ▦ Panels")
+        close.clicked.connect(self.closeRequested)
+        top = QHBoxLayout()
+        top.addLayout(header, 1)
+        top.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+        top.setContentsMargins(0, 8, 8, 0)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addLayout(header)
+        layout.addLayout(top)
         layout.addWidget(notes, 1)
         layout.addWidget(player)
 

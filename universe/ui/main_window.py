@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self._connect()
 
         self._restore_state()
+        self.center.setVisible(self.settings.notes_visible)
         self.open_lecture(None)
         self.sidebar.select_by_name(settings.last_subject, settings.last_lecture)
         QTimer.singleShot(0, lambda: setattr(self, "_ready", True))
@@ -157,13 +158,18 @@ class MainWindow(QMainWindow):
 
         # Closed panels come back from here (same menu as View in the menu bar).
         self.panels_menu = QMenu("Panels", self)
+        # Notes live in the central area, not a dock; hiding it lets the docks take the space.
+        self.notes_action = QAction("Notes", self, checkable=True, checked=self.settings.notes_visible)
+        self.notes_action.setShortcut(QKeySequence("Ctrl+0"))
+        self.notes_action.toggled.connect(self._set_notes_visible)
+        self.panels_menu.addAction(self.notes_action)
         for number, dock in enumerate(self.docks.values(), start=1):
             action = dock.toggleViewAction()
             action.setShortcut(QKeySequence(f"Ctrl+{number}"))
             action.toggled.connect(lambda visible, d=dock: self._on_panel_toggled(d, visible))
             self.panels_menu.addAction(action)
         self.panels_menu.addSeparator()
-        self.panels_menu.addAction("Reset Layout", self._default_layout)
+        self.panels_menu.addAction("Reset Layout", lambda: (self.notes_action.setChecked(True), self._default_layout()))
         panels = QToolButton(text="▦  Panels")
         panels.setObjectName("panelsButton")
         panels.setToolTip("Show or hide panels — closed panels can be reopened here")
@@ -180,6 +186,19 @@ class MainWindow(QMainWindow):
             shortcut = dock.toggleViewAction().shortcut().toString(QKeySequence.SequenceFormat.NativeText)
             self.statusBar().showMessage(
                 f"“{dock.windowTitle()}” closed — reopen it any time from ▦ Panels (top right) or {shortcut}.", 10000
+            )
+
+    def _set_notes_visible(self, visible: bool) -> None:
+        self.settings.notes_visible = visible
+        self.center.setVisible(visible)
+        if not self._ready:
+            return
+        if visible:
+            self.notes.edit.setFocus()
+        else:
+            shortcut = self.notes_action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+            self.statusBar().showMessage(
+                f"“Notes” closed — reopen it any time from ▦ Panels (top right) or {shortcut}.", 10000
             )
 
     def _default_layout(self) -> None:
@@ -265,6 +284,7 @@ class MainWindow(QMainWindow):
         self.welcome.createLecture.connect(self.sidebar.new_lecture)
         self.welcome.quickRecord.connect(self.toggle_recording)
         self.welcome.openLecture.connect(lambda lecture: self.sidebar.refresh(select=lecture))
+        self.lecture_view.closeRequested.connect(lambda: self.notes_action.setChecked(False))
         self.lecture_view.assignProfessor.connect(lambda: self.lecture and self._assign_professor(self.lecture))
 
         self.record_controls.recordClicked.connect(self.toggle_recording)
