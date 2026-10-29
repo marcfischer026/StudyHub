@@ -237,6 +237,10 @@ class PdfViewer(QWidget):
             label.clear()
             label.setFixedSize(int(rect.width * self.zoom), int(rect.height * self.zoom))
         self._rendered.clear()
+        # Lay the pages out now: otherwise go_to_page scrolls and renders by the
+        # old positions, and the slides actually in view stay blank white.
+        self.pages_layout.activate()
+        self.pages.resize(self.pages.sizeHint().expandedTo(self.scroll.viewport().size()))
         QTimer.singleShot(0, lambda: self.go_to_page(keep_page))
 
     def eventFilter(self, obj, event) -> bool:
