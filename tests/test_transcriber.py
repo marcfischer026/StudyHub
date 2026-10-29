@@ -68,5 +68,15 @@ class RedoLoopsTest(unittest.TestCase):
         self.assertEqual([s.text for s in out], ["a", "b", "c"])
 
 
+class HallucinationFilterTest(unittest.TestCase):
+    def test_subtitle_credits_are_dropped_but_real_thanks_kept(self):
+        drop = ["Untertitel im Auftrag des ZDF, 2021", "Untertitel der Amara.org-Community", "Vielen Dank fürs Zuschauen!"]
+        keep = ["Danke.", "Vielen Dank.", "Die Untertitel stehen im Skript."]
+        for text in drop:
+            self.assertTrue(transcriber._HALLUCINATION_RE.match(text), text)
+        for text in keep:
+            self.assertFalse(transcriber._HALLUCINATION_RE.match(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

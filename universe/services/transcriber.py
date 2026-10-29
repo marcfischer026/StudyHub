@@ -22,13 +22,19 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..config import Settings
+from ..config import Settings, models_dir
 from .jobcontrol import Cancelled, JobControl
 from .timestamps import make_stamp
 
 _PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+)%")
 # Whole-segment annotations such as "[INDISTINCT CHATTER]", "(Musik)", "* applause *".
 _NOISE_RE = re.compile(r"^\s*(\[[^\]]*\]|\([^)]*\)|\*[^*]*\*)\s*$")
+# Lines Whisper invents on silence, learned from subtitled videos (whole segment only).
+_HALLUCINATION_RE = re.compile(
+    r"^\W*(untertitel(ung)?\b.*|.*amara\.org.*|vielen dank (fürs|für's|für das) zuschauen\W*|"
+    r"thanks? (you )?for watching\W*|bis zum nächsten mal\W*|sous-titr.*)$",
+    re.IGNORECASE,
+)
 # Whisper's decoding loop: once stuck, it emits the same line over and over (often
 # on quiet or noisy stretches). This many identical lines in a row is never speech.
 _LOOP_MIN_RUN = 4
@@ -108,6 +114,12 @@ def collapse_repeats(segments: list[Segment]) -> list[Segment]:
         out[i].end = max(s.end for s in segments[i:j])
         del out[i + 1 : j]
     return out
+
+
+def vad_model() -> Path | None:
+    """Silero voice-activity model for whisper.cpp, if installed in ``models/vad/``.
+    With it whisper only hears speech, so silence can't start a "Danke." loop."""
+    return next(iter(sorted((models_dir() / "vad").glob("*silero*.bin"))), None)
 
 
 def check_setup(settings: Settings) -> list[str]:
@@ -193,6 +205,9 @@ def _run_whisper(
         "-pp",
         *(extra or []),
     ]
+    vad = vad_model()
+    if vad:
+        cmd += ["--vad", "-vm", str(vad)]
     if prompt:
         cmd += ["--prompt", prompt]
     if control:
@@ -225,7 +240,9 @@ def _run_whisper(
             text=item["text"].strip(),
         )
         for item in raw.get("transcription", [])
-        if item.get("text", "").strip() and not _NOISE_RE.match(item["text"])
+        if item.get("text", "").strip()
+        and not _NOISE_RE.match(item["text"])
+        and not _HALLUCINATION_RE.match(item["text"].strip())
     ]
 
 
