@@ -3,6 +3,11 @@
 All pages sit in one continuous, scrollable column (like Preview). Pages are
 rendered lazily — only those near the viewport hold a pixmap — so long slide
 decks stay fast and light on memory.
+
+Text on a slide can be selected and copied (drag across it, ⌘C or right-click),
+and the highlighter marks text — or any area, e.g. a diagram — in a colour.
+Highlights are saved into the PDF as standard annotations, so Preview and other
+readers show them too.
 """
 
 from __future__ import annotations
@@ -11,13 +16,15 @@ from pathlib import Path
 from typing import Callable
 
 import pymupdf
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -32,6 +39,82 @@ from ..storage import import_file
 EMPTY_TEXT = "No {noun} yet.\n\nClick “Import PDF…” or drag a PDF file here."
 PAGE_GAP = 12
 KEEP_RENDERED = 6  # pages beyond this distance from the viewport drop their pixmap
+WORD_SLACK = 3  # points: a press this close to a word starts a text selection, not an area
+HIGHLIGHT_COLORS = {  # name -> RGB 0..1, as PDF annotations store them
+    "Yellow": (1.0, 0.92, 0.23),
+    "Green": (0.56, 0.93, 0.47),
+    "Blue": (0.53, 0.81, 0.98),
+    "Pink": (1.0, 0.6, 0.8),
+}
+SELECTION_COLOR = QColor(0, 122, 255, 70)
+AREA_OPACITY = 0.35
+MARK_TYPES = [pymupdf.PDF_ANNOT_HIGHLIGHT, pymupdf.PDF_ANNOT_SQUARE]  # what "Remove highlight" removes
+
+
+def selection_text(words: list[tuple]) -> str:
+    """Words from ``page.get_text("words")`` joined back into lines."""
+    out, last = [], None
+    for w in words:
+        line = (w[5], w[6])
+        if last is not None:
+            out.append(" " if line == last else "\n")
+        out.append(w[4])
+        last = line
+    return "".join(out)
+
+
+def line_rects(words: list[tuple]) -> list[pymupdf.Rect]:
+    """One rectangle per text line covered by ``words`` — what a highlight marks."""
+    lines: dict[tuple, pymupdf.Rect] = {}
+    for w in words:
+        rect = pymupdf.Rect(w[:4])
+        key = (w[5], w[6])
+        lines[key] = lines[key] | rect if key in lines else rect
+    return list(lines.values())
+
+
+class SlidePage(QLabel):
+    """One rendered page; turns mouse drags into text selections and highlights."""
+
+    def __init__(self, viewer: "PdfViewer", index: int):
+        super().__init__()
+        self.viewer = viewer
+        self.index = index
+        self.setObjectName("slidePage")
+        self.setMouseTracking(True)  # I-beam cursor over text
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.viewer._begin_drag(self.index, event.position())
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.viewer._continue_drag(self.index, event.position())
+        else:
+            self.viewer._update_cursor(self, event.position())
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.viewer._end_drag(self.index)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.viewer._select_line_at(self.index, event.position())
+
+    def contextMenuEvent(self, event) -> None:
+        self.viewer._context_menu(self.index, event.pos(), event.globalPos())
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        rects = self.viewer._selection_rects(self.index)
+        if rects:
+            painter = QPainter(self)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(SELECTION_COLOR)
+            for rect in rects:
+                painter.drawRect(rect)
+            painter.end()
 
 
 class PdfViewer(QWidget):
@@ -51,8 +134,16 @@ class PdfViewer(QWidget):
         self.doc: pymupdf.Document | None = None
         self.zoom = 1.0
         self.fit_mode = True  # zoom follows the panel width until the user zooms by hand
-        self.page_labels: list[QLabel] = []
+        self.page_labels: list[SlidePage] = []
         self._rendered: set[int] = set()
+        self._words: dict[int, list[tuple]] = {}  # page -> get_text("words"), filled on demand
+        self.highlight_color = "Yellow"
+        # Current selection: a page plus either a word range or a dragged area.
+        self._sel_page: int | None = None
+        self._sel_words: list[tuple] = []
+        self._sel_area: pymupdf.Rect | None = None  # unrotated PDF coordinates
+        self._drag_start: pymupdf.Point | None = None
+        self._drag_word: int | None = None  # index of the word the drag started on
 
         self.files = QComboBox()
         self.files.currentIndexChanged.connect(self._open_selected)
@@ -82,6 +173,24 @@ class PdfViewer(QWidget):
         fit = QToolButton(text="Fit")
         fit.setToolTip("Fit slides to the panel width")
         fit.clicked.connect(self.fit_width)
+        self.highlighter = QToolButton(text="Mark", checkable=True)
+        self.highlighter.setToolTip(
+            "Highlighter: drag over text — or over any area, e.g. a diagram — to mark it.\n"
+            "Right-click a highlight to remove it. Pick the colour from the arrow menu."
+        )
+        self.highlighter.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        colors = QMenu(self.highlighter)
+        group = QActionGroup(colors)
+        for name in HIGHLIGHT_COLORS:
+            action = QAction(name, colors, checkable=True, checked=name == self.highlight_color)
+            action.setIcon(self._swatch(name))
+            action.triggered.connect(lambda _=False, n=name: self._pick_color(n))
+            group.addAction(action)
+            colors.addAction(action)
+        self.highlighter.setMenu(colors)
+        self.highlighter.setIcon(self._swatch(self.highlight_color))
+        self.highlighter.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.highlighter.toggled.connect(lambda _on: self.clear_selection())
 
         top = QHBoxLayout()
         top.addWidget(self.files, 1)
@@ -90,6 +199,7 @@ class PdfViewer(QWidget):
         for w in (self.prev_btn, self.page, self.page_count, self.next_btn):
             nav.addWidget(w)
         nav.addStretch()
+        nav.addWidget(self.highlighter)
         for w in (zoom_out, zoom_in, fit):
             nav.addWidget(w)
 
@@ -110,6 +220,12 @@ class PdfViewer(QWidget):
         self.scroll.installEventFilter(self)  # ← / → flip slides; ↑ ↓ and the trackpad scroll
         self._refit = QTimer(self, singleShot=True, interval=120)
         self._refit.timeout.connect(self._refit_now)
+        copy = QShortcut(QKeySequence.StandardKey.Copy, self, context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        copy.activated.connect(self.copy_selection)
+        select_all = QShortcut(QKeySequence.StandardKey.SelectAll, self, context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        select_all.activated.connect(lambda: self._select_page(self.page.value() - 1))
+        escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self, context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        escape.activated.connect(self.clear_selection)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -184,6 +300,9 @@ class PdfViewer(QWidget):
             label.deleteLater()
         self.page_labels = []
         self._rendered.clear()
+        self._words.clear()
+        self._sel_page = None
+        self._sel_words, self._sel_area = [], None
 
     def _show_message(self, text: str) -> None:
         self._clear_pages()
@@ -209,9 +328,8 @@ class PdfViewer(QWidget):
             return
         self.message.hide()
         self._clear_pages()
-        for _ in range(self.doc.page_count):
-            label = QLabel()
-            label.setObjectName("slidePage")
+        for i in range(self.doc.page_count):
+            label = SlidePage(self, i)
             self.pages_layout.addWidget(label)
             self.page_labels.append(label)
         self.page.blockSignals(True)
@@ -325,3 +443,207 @@ class PdfViewer(QWidget):
         pixmap.setDevicePixelRatio(dpr)
         self.page_labels[index].setPixmap(pixmap)
         self._rendered.add(index)
+
+    # --- selecting, copying and highlighting --------------------------------
+
+    def _swatch(self, name: str) -> QPixmap:
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(QColor.fromRgbF(*HIGHLIGHT_COLORS[name]))
+        return pixmap
+
+    def _pick_color(self, name: str) -> None:
+        self.highlight_color = name
+        self.highlighter.setIcon(self._swatch(name))
+        self.highlighter.setChecked(True)
+
+    def _page_words(self, index: int) -> list[tuple]:
+        if index not in self._words:
+            self._words[index] = self.doc[index].get_text("words") if self.doc is not None else []
+        return self._words[index]
+
+    def _to_pdf(self, index: int, pos: QPointF) -> pymupdf.Point:
+        """Widget pixel -> unrotated PDF point (what text and annotations use)."""
+        return pymupdf.Point(pos.x() / self.zoom, pos.y() / self.zoom) * self.doc[index].derotation_matrix
+
+    def _to_widget(self, index: int, rect: pymupdf.Rect) -> QRect:
+        r = (rect * self.doc[index].rotation_matrix) * self.zoom
+        return QRectF(r.x0, r.y0, r.width, r.height).toAlignedRect()
+
+    def _word_at(self, index: int, point: pymupdf.Point, slack: float = WORD_SLACK) -> int | None:
+        """The word under ``point`` (within ``slack`` points), else None."""
+        best, best_dist = None, slack
+        for i, w in enumerate(self._page_words(index)):
+            rect = pymupdf.Rect(w[:4])
+            dx = max(rect.x0 - point.x, 0, point.x - rect.x1)
+            dy = max(rect.y0 - point.y, 0, point.y - rect.y1)
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist <= best_dist:
+                best, best_dist = i, dist
+                if dist == 0:
+                    break
+        return best
+
+    def _nearest_word(self, index: int, point: pymupdf.Point) -> int | None:
+        return self._word_at(index, point, slack=float("inf"))
+
+    def _begin_drag(self, index: int, pos: QPointF) -> None:
+        if self.doc is None:
+            return
+        self.scroll.setFocus()  # so ⌘C / Esc reach this viewer
+        self.clear_selection()
+        self._sel_page = index
+        self._drag_start = self._to_pdf(index, pos)
+        self._drag_word = self._word_at(index, self._drag_start)
+
+    def _continue_drag(self, index: int, pos: QPointF) -> None:
+        if self._drag_start is None or index != self._sel_page:
+            return
+        point = self._to_pdf(index, pos)
+        words = self._page_words(index)
+        if self._drag_word is not None:
+            end = self._nearest_word(index, point)
+            lo, hi = sorted((self._drag_word, end))
+            self._sel_words, self._sel_area = words[lo : hi + 1], None
+        else:  # started off the text: a rectangle, selecting the words inside it
+            area = pymupdf.Rect(self._drag_start, self._drag_start) | point
+            area.normalize()
+            self._sel_area = area
+            self._sel_words = [w for w in words if pymupdf.Rect(w[:4]).intersects(area)]
+        self.page_labels[index].update()
+
+    def _end_drag(self, index: int) -> None:
+        if self._drag_start is None:
+            return
+        self._drag_start = None
+        if self.highlighter.isChecked() and index == self._sel_page:
+            self.highlight_selection()
+
+    def _select_line_at(self, index: int, pos: QPointF) -> None:
+        """Double-click: select the whole text line under the cursor."""
+        if self.doc is None:
+            return
+        hit = self._word_at(index, self._to_pdf(index, pos))
+        if hit is None:
+            return
+        words = self._page_words(index)
+        line = words[hit][5:7]
+        self.clear_selection()
+        self._sel_page = index
+        self._sel_words = [w for w in words if w[5:7] == line]
+        self.page_labels[index].update()
+        if self.highlighter.isChecked():
+            self.highlight_selection()
+
+    def _select_page(self, index: int) -> None:
+        if self.doc is None or not 0 <= index < len(self.page_labels):
+            return
+        self.clear_selection()
+        self._sel_page = index
+        self._sel_words = list(self._page_words(index))
+        self.page_labels[index].update()
+
+    def _selection_rects(self, index: int) -> list[QRect]:
+        if index != self._sel_page or self.doc is None:
+            return []
+        if self._sel_area is not None and (not self._sel_words or self.highlighter.isChecked()):
+            return [self._to_widget(index, self._sel_area)]
+        return [self._to_widget(index, r) for r in line_rects(self._sel_words)]
+
+    def _update_cursor(self, label: SlidePage, pos: QPointF) -> None:
+        if self.doc is None:
+            return
+        on_text = self._word_at(label.index, self._to_pdf(label.index, pos)) is not None
+        if on_text:
+            label.setCursor(Qt.CursorShape.IBeamCursor)
+        elif self.highlighter.isChecked():
+            label.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            label.unsetCursor()
+
+    def clear_selection(self) -> None:
+        page, self._sel_page = self._sel_page, None
+        self._sel_words, self._sel_area = [], None
+        if page is not None and page < len(self.page_labels):
+            self.page_labels[page].update()
+
+    def selected_text(self) -> str:
+        return selection_text(self._sel_words)
+
+    def copy_selection(self) -> None:
+        text = self.selected_text()
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def highlight_selection(self) -> None:
+        """Mark the selected text (or dragged area) with the current colour."""
+        index = self._sel_page
+        if index is None or self.doc is None:
+            return
+        page = self.doc[index]
+        if self._sel_area is not None and (self.highlighter.isChecked() or not self._sel_words):
+            area = self._sel_area
+            if area.width < 4 or area.height < 4:  # a stray click, not a drag
+                self.clear_selection()
+                return
+            # A translucent box: highlight annotations draw rounded ends meant for text lines.
+            color = HIGHLIGHT_COLORS[self.highlight_color]
+            annot = page.add_rect_annot(area)
+            annot.set_colors(stroke=color, fill=color)
+            annot.set_border(width=0)
+            annot.set_opacity(AREA_OPACITY)
+        elif self._sel_words:
+            annot = page.add_highlight_annot(quads=[r.quad for r in line_rects(self._sel_words)])
+            annot.set_colors(stroke=HIGHLIGHT_COLORS[self.highlight_color])
+        else:
+            return
+        annot.update()
+        self.clear_selection()
+        self._save_and_refresh(index)
+
+    def _highlight_at(self, page: pymupdf.Page, point: pymupdf.Point):
+        for annot in page.annots(types=MARK_TYPES):
+            if point in annot.rect:
+                return annot
+        return None
+
+    def _remove_highlight(self, index: int, point: pymupdf.Point) -> None:
+        page = self.doc[index]  # keep it: an annot is only valid while its page object lives
+        annot = self._highlight_at(page, point)
+        if annot is not None:
+            page.delete_annot(annot)
+            self._save_and_refresh(index)
+
+    def _save_and_refresh(self, index: int) -> None:
+        try:
+            if self.doc.can_save_incrementally():
+                self.doc.saveIncr()
+            else:  # e.g. a repaired PDF: write a full copy, then swap it in
+                path = Path(self.doc.name)
+                tmp = path.with_name(path.name + ".saving")
+                self.doc.save(tmp, garbage=1)
+                self.doc.close()
+                tmp.replace(path)
+                self.doc = pymupdf.open(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Highlight", f"Could not save the highlight:\n{exc}")
+        self._rendered.discard(index)
+        self._render(index)
+
+    def _context_menu(self, index: int, pos, global_pos) -> None:
+        if self.doc is None:
+            return
+        point = self._to_pdf(index, QPointF(pos))
+        menu = QMenu(self)
+        has_selection = index == self._sel_page and (self._sel_words or self._sel_area is not None)
+        copy = menu.addAction("Copy", self.copy_selection)
+        copy.setShortcut(QKeySequence.StandardKey.Copy)
+        copy.setEnabled(bool(index == self._sel_page and self._sel_words))
+        mark = menu.addAction(f"Highlight ({self.highlight_color})", self.highlight_selection)
+        mark.setEnabled(bool(has_selection))
+        if self._highlight_at(self.doc[index], point) is not None:
+            menu.addAction("Remove highlight", lambda: self._remove_highlight(index, point))
+        menu.addSeparator()
+        page_text = self.doc[index].get_text("text").strip()
+        slide_copy = menu.addAction("Copy slide text", lambda: QApplication.clipboard().setText(page_text))
+        slide_copy.setEnabled(bool(page_text))
+        menu.exec(global_pos)
