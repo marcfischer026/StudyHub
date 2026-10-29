@@ -51,6 +51,13 @@ class StorageTests(unittest.TestCase):
             self.assertTrue((lecture.path / sub).is_dir())
         self.assertEqual([lec.name for lec in subject.lectures()], ["Week 1: NPV"])
 
+    def test_figures_get_link_safe_names(self):
+        lecture = self.ws.create_subject("Mathe").create_lecture("Week 1")
+        first = lecture.add_figure(b"1", {"pdf": "VL 1 Folien.pdf", "page": 12})
+        second = lecture.add_figure(b"2", {"pdf": "VL 1 Folien.pdf", "page": 12})
+        self.assertEqual((first.name, second.name), ("VL-1-Folien-p12.png", "VL-1-Folien-p12-2.png"))
+        self.assertEqual(lecture.figure_source(second)["page"], 12)
+
     def test_audio_bundle_includes_its_transcripts_only(self):
         lecture = self.ws.create_subject("Mathe").create_lecture("Week 1")
         audio = lecture.dir("audio") / "Memo.m4a"
@@ -242,6 +249,28 @@ class ClaudeBridgeTests(unittest.TestCase):
             self.assertIn(needle, text)
         claude_bridge.save_response(lecture, claude_bridge.parse_response(json.dumps(VALID_REPLY)))
         self.assertEqual(len(claude_bridge.load_latest(lecture).quizzes), 3)
+
+    def test_export_reads_figures_highlights_and_past_exams(self):
+        import pymupdf
+
+        lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance").create_lecture("Week 1")
+        png = lecture.add_figure(b"png", {"caption": "VL1.pdf, slide 2", "text": "x", "tables": ["|A|B|\n|---|---|\n|1|2|"]})
+        lecture.write_notes(f"Intro\n\n![VL1.pdf, slide 2](figures/{png.name})\n")
+        slides = pymupdf.open()
+        page = slides.new_page()
+        page.insert_text((50, 60), "Kapitalwert")
+        page.add_highlight_annot(page.search_for("Kapitalwert")[0])
+        slides.save(lecture.dir("slides") / "VL1.pdf")
+        exam = pymupdf.open()
+        exam.new_page().insert_text((50, 60), "Aufgabe 1: Kapitalwert berechnen")
+        exam.save(lecture.subject.dir("exams") / "Klausur WS24.pdf")
+        text = claude_bridge.build_context(lecture, None)
+        self.assertIn("[Figure F1 — VL1.pdf, slide 2]", text)
+        self.assertIn("> |1|2|", text)
+        self.assertNotIn("Text in the figure", text)  # the table already carries it
+        self.assertNotIn("](figures/", text)  # no image links Claude cannot open
+        self.assertIn("✎ highlighted: Kapitalwert", text)
+        self.assertIn("Aufgabe 1: Kapitalwert berechnen", text)
 
 
 class IndexTests(unittest.TestCase):

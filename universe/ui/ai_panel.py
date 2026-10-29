@@ -356,6 +356,13 @@ class AIPanel(QWidget):
             f"Wrote <a href='{html.escape(str(path), quote=True)}'>{path.name}</a> ({len(text):,} characters)"
             + (" and copied it to the clipboard. Paste it into Claude." if self.copy_clipboard.isChecked() else ".")
         )
+        figures = sorted(self.lecture.dir("figures").glob("*.png"))
+        if figures:  # Context.md describes them in words; the images themselves have to be dropped in
+            self.export_status.setText(
+                self.export_status.text()
+                + f"<br>Also drag the {len(figures)} clipped figure(s) from "
+                f"<a href='{html.escape(str(figures[0]), quote=True)}'>figures</a> into Claude so it sees the graphics."
+            )
 
     def import_response(self) -> None:
         if self.lecture is None:

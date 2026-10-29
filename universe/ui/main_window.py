@@ -31,7 +31,7 @@ from ..storage import Lecture, Subject, Workspace, clock_time
 from . import workers
 from .ai_panel import AIPanel, hit_target
 from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, open_mic_privacy_settings
-from .note_editor import NoteEditor
+from .note_editor import DOC_NAMES, NoteEditor
 from .pdf_viewer import PdfViewer
 from .professor_dialog import AssignProfessorDialog, ProfessorManager
 from .settings_dialog import SettingsDialog
@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self._last_viewer = "slides"  # the one the user touched last, if several are visible
         for kind, viewer in self.viewers.items():
             viewer.interacted.connect(lambda kind=kind: setattr(self, "_last_viewer", kind))
+            viewer.figureClipped.connect(lambda data, kind=kind: self._add_figure(kind, data))
         self.transcript = TranscriptPanel()
         self.ai = AIPanel(self.professors)
         self.recordings = RecordingsPanel(
@@ -542,6 +543,20 @@ class MainWindow(QMainWindow):
             name, page = self.viewers[kind].current()
             context.update(doc=kind, pdf=name, page=page)
         return context
+
+    def _add_figure(self, kind: str, data: dict) -> None:
+        """A snip from a PDF viewer: store it with the lecture and put it into the notes."""
+        lecture = self.ensure_lecture(Path(data["pdf"]).stem)
+        if lecture is None:
+            return
+        unit = "slide" if kind == "slides" else "page"
+        caption = f"{'' if kind == 'slides' else DOC_NAMES[kind] + ': '}{data['pdf']}, {unit} {data['page']}"
+        source = {k: data[k] for k in ("pdf", "page", "text", "tables")} | {"doc": kind, "caption": caption}
+        png = lecture.add_figure(data["png"], source)
+        self.notes_action.setChecked(True)
+        self.notes.insert_figure(png, caption, data["tables"])
+        found = f" with {len(data['tables'])} table(s) as text" if data["tables"] else ""
+        self.statusBar().showMessage(f"Added figure from {caption} to your notes{found}.", 6000)
 
     def _jump_to_anchor(self, context: dict) -> None:
         if "t" in context:

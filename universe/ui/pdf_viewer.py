@@ -8,6 +8,9 @@ Text on a slide can be selected and copied (drag across it, ⌘C or right-click)
 and the highlighter marks text — or any area, e.g. a diagram — in a colour.
 Highlights are saved into the PDF as standard annotations, so Preview and other
 readers show them too.
+
+The snip tool clips any area — a chart, a table, a diagram — into the notes,
+with the text and tables found in it, so the Claude export can read them.
 """
 
 from __future__ import annotations
@@ -49,6 +52,23 @@ HIGHLIGHT_COLORS = {  # name -> RGB 0..1, as PDF annotations store them
 SELECTION_COLOR = QColor(0, 122, 255, 70)
 AREA_OPACITY = 0.35
 MARK_TYPES = [pymupdf.PDF_ANNOT_HIGHLIGHT, pymupdf.PDF_ANNOT_SQUARE]  # what "Remove highlight" removes
+FIGURE_WIDTH = 1600  # pixels a clipped figure is rendered at (sharp on Retina and for Claude)
+
+
+def clip_figure(page: pymupdf.Page, area: pymupdf.Rect) -> tuple[bytes, str, list[str]]:
+    """A PNG of ``area`` plus the text and the tables (as Markdown) inside it."""
+    scale = max(2.0, min(6.0, FIGURE_WIDTH / max(area.width, 1)))
+    png = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), clip=area, alpha=False).tobytes("png")
+    # Whole words the box touches: a box drawn roughly around a chart often cuts its labels.
+    text = selection_text([w for w in page.get_text("words") if pymupdf.Rect(w[:4]).intersects(area)])
+    tables = []
+    try:
+        for table in page.find_tables(clip=area).tables:
+            if table.row_count > 1 and table.col_count > 1:
+                tables.append(table.to_markdown(clean=False).strip())
+    except Exception:  # table detection is best effort (old PyMuPDF, odd layouts)
+        pass
+    return png, text, tables
 
 
 def selection_text(words: list[tuple]) -> str:
@@ -120,6 +140,7 @@ class SlidePage(QLabel):
 class PdfViewer(QWidget):
     pdfImported = Signal(object)  # Path
     interacted = Signal()  # the user scrolled, clicked or switched files here
+    figureClipped = Signal(dict)  # {"png": bytes, "pdf", "page", "text", "tables"}
 
     def __init__(self, ensure_folder: Callable[[str], Path | None], noun: str = "slides", parent=None):
         """Shows the PDFs in one folder. ``ensure_folder(name_hint)`` returns the
@@ -191,6 +212,13 @@ class PdfViewer(QWidget):
         self.highlighter.setIcon(self._swatch(self.highlight_color))
         self.highlighter.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.highlighter.toggled.connect(lambda _on: self.clear_selection())
+        self.snipper = QToolButton(text="✂ Snip", checkable=True)
+        self.snipper.setToolTip(
+            "Snip: drag a box around a chart, table or diagram to put it into your notes.\n"
+            "Text and tables inside it go along, so Claude can read them in the export."
+        )
+        self.highlighter.toggled.connect(lambda on: on and self.snipper.setChecked(False))
+        self.snipper.toggled.connect(lambda on: (on and self.highlighter.setChecked(False), self.clear_selection()))
 
         top = QHBoxLayout()
         top.addWidget(self.files, 1)
@@ -199,6 +227,7 @@ class PdfViewer(QWidget):
         for w in (self.prev_btn, self.page, self.page_count, self.next_btn):
             nav.addWidget(w)
         nav.addStretch()
+        nav.addWidget(self.snipper)
         nav.addWidget(self.highlighter)
         for w in (zoom_out, zoom_in, fit):
             nav.addWidget(w)
@@ -493,7 +522,7 @@ class PdfViewer(QWidget):
         self.clear_selection()
         self._sel_page = index
         self._drag_start = self._to_pdf(index, pos)
-        self._drag_word = self._word_at(index, self._drag_start)
+        self._drag_word = None if self.snipper.isChecked() else self._word_at(index, self._drag_start)
 
     def _continue_drag(self, index: int, pos: QPointF) -> None:
         if self._drag_start is None or index != self._sel_page:
@@ -517,6 +546,8 @@ class PdfViewer(QWidget):
         self._drag_start = None
         if self.highlighter.isChecked() and index == self._sel_page:
             self.highlight_selection()
+        elif self.snipper.isChecked() and index == self._sel_page:
+            self.clip_selection()
 
     def _select_line_at(self, index: int, pos: QPointF) -> None:
         """Double-click: select the whole text line under the cursor."""
@@ -545,7 +576,7 @@ class PdfViewer(QWidget):
     def _selection_rects(self, index: int) -> list[QRect]:
         if index != self._sel_page or self.doc is None:
             return []
-        if self._sel_area is not None and (not self._sel_words or self.highlighter.isChecked()):
+        if self._sel_area is not None and (not self._sel_words or self.highlighter.isChecked() or self.snipper.isChecked()):
             return [self._to_widget(index, self._sel_area)]
         return [self._to_widget(index, r) for r in line_rects(self._sel_words)]
 
@@ -553,7 +584,9 @@ class PdfViewer(QWidget):
         if self.doc is None:
             return
         on_text = self._word_at(label.index, self._to_pdf(label.index, pos)) is not None
-        if on_text:
+        if self.snipper.isChecked():
+            label.setCursor(Qt.CursorShape.CrossCursor)
+        elif on_text:
             label.setCursor(Qt.CursorShape.IBeamCursor)
         elif self.highlighter.isChecked():
             label.setCursor(Qt.CursorShape.CrossCursor)
@@ -600,6 +633,21 @@ class PdfViewer(QWidget):
         self.clear_selection()
         self._save_and_refresh(index)
 
+    def clip_selection(self, index: int | None = None, area: pymupdf.Rect | None = None) -> None:
+        """Send the dragged area (or ``area`` on page ``index``) to the notes as a figure."""
+        if index is None:
+            index, area = self._sel_page, self._sel_area
+        if index is None or area is None or self.doc is None:
+            return
+        if area.width < 8 or area.height < 8:  # a stray click, not a drag
+            self.clear_selection()
+            return
+        png, text, tables = clip_figure(self.doc[index], area)
+        self.clear_selection()
+        self.figureClipped.emit(
+            {"png": png, "pdf": self.files.currentText(), "page": index + 1, "text": text, "tables": tables}
+        )
+
     def _highlight_at(self, page: pymupdf.Page, point: pymupdf.Point):
         for annot in page.annots(types=MARK_TYPES):
             if point in annot.rect:
@@ -642,6 +690,10 @@ class PdfViewer(QWidget):
         mark.setEnabled(bool(has_selection))
         if self._highlight_at(self.doc[index], point) is not None:
             menu.addAction("Remove highlight", lambda: self._remove_highlight(index, point))
+        menu.addSeparator()
+        snip = menu.addAction("✂ Add selected area to notes", self.clip_selection)
+        snip.setEnabled(index == self._sel_page and self._sel_area is not None)
+        menu.addAction("✂ Add whole slide to notes", lambda: self.clip_selection(index, self.doc[index].rect))
         menu.addSeparator()
         page_text = self.doc[index].get_text("text").strip()
         slide_copy = menu.addAction("Copy slide text", lambda: QApplication.clipboard().setText(page_text))

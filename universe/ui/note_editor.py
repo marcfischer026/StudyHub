@@ -9,15 +9,18 @@ right-click it) to get back to both. Anchors live in ``notes.anchors.json``.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QRegularExpression, Qt, QTimer, Signal
+from PySide6.QtCore import QRegularExpression, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QImage,
     QKeySequence,
     QSyntaxHighlighter,
+    QTextBlockFormat,
     QTextBlockUserData,
     QTextCharFormat,
     QTextCursor,
@@ -48,6 +51,7 @@ class _StampHighlighter(QSyntaxHighlighter):
 
 DOC_NAMES = {"slides": "Slides", "exams": "Past Exams", "exercises": "Exercises"}
 ANCHOR_SEARCH = 50  # paragraphs to look ahead when re-attaching saved anchors
+FIGURE_MAX_WIDTH = 560  # display width of clipped figures; the PNG itself stays full size
 
 
 class _Anchor(QTextBlockUserData):
@@ -185,7 +189,10 @@ class NoteEditor(QWidget):
         self.lecture = lecture
         self.edit.blockSignals(True)
         self._loading = True
+        # Figures are linked as "figures/x.png", relative to the lecture folder.
+        self.edit.document().setBaseUrl(QUrl.fromLocalFile(f"{lecture.path}/") if lecture else QUrl())
         self.edit.setMarkdown(lecture.read_notes() if lecture else "")
+        self._fit_images()
         self._restore_anchors(lecture.read_anchors() if lecture else [])
         self._loading = False
         self.edit.blockSignals(False)
@@ -209,6 +216,48 @@ class NoteEditor(QWidget):
         self.dirty = True
         self.status.setText("Editing…")
         self.autosave.start()
+
+    # --- figures ------------------------------------------------------------
+
+    def insert_figure(self, png: Path, caption: str, tables: list[str]) -> None:
+        """Put a clipped graphic at the cursor: the image, its source, and any tables as real text."""
+        if self.lecture is None:
+            return
+        cursor = self.edit.textCursor()
+        if cursor.block().text().strip():
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+            cursor.insertBlock(QTextBlockFormat(), QTextCharFormat())
+        relative = png.relative_to(self.lecture.path).as_posix()
+        markdown = f"![{caption}]({relative})\n\n*{caption}*\n\n" + "".join(f"{table}\n\n" for table in tables)
+        cursor.insertMarkdown(markdown)
+        cursor.insertBlock(QTextBlockFormat(), QTextCharFormat())  # keep writing below, outside any table
+        self.edit.setTextCursor(cursor)
+        self._fit_images()
+        self.edit.setFocus()
+
+    def _fit_images(self) -> None:
+        """Show figures at a readable size (Markdown does not store a width)."""
+        if self.lecture is None:
+            return
+        block = self.edit.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                fragment = it.fragment()
+                fmt = fragment.charFormat()
+                if fmt.isImageFormat():
+                    image_fmt = fmt.toImageFormat()
+                    image = QImage(str(self.lecture.path / image_fmt.name()))
+                    if not image.isNull() and image_fmt.width() <= 0:
+                        width = min(FIGURE_MAX_WIDTH, image.width() / 2)
+                        image_fmt.setWidth(width)
+                        image_fmt.setHeight(width * image.height() / image.width())
+                        cursor = QTextCursor(self.edit.document())
+                        cursor.setPosition(fragment.position())
+                        cursor.setPosition(fragment.position() + fragment.length(), QTextCursor.MoveMode.KeepAnchor)
+                        cursor.setCharFormat(image_fmt)
+                it += 1
+            block = block.next()
 
     # --- hidden anchors -----------------------------------------------------
 

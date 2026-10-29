@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..professors import ProfessorProfile
-from ..storage import Lecture
+from ..storage import Lecture, Subject
 from . import pdf_tools, relevance, speakers
 from .timestamps import make_stamp
 from .transcriber import Transcript
@@ -59,13 +59,18 @@ def build_prompt(lecture_name: str, n_questions: int) -> str:
     return f"""## Instructions for Claude
 
 You are a university tutor. Study every section of this document — the professor
-profile, the student's notes, the lecture transcript and the slides — and prepare
-exam material for the lecture **{lecture_name}**.
+profile, the student's notes, the lecture transcript, the slides and the subject's
+past exams and exercises — and prepare exam material for the lecture **{lecture_name}**.
 
 1. Tailor everything to the professor profile: match their testing style, question
    types and focus areas.
 2. Write **{n_questions} quiz questions** mixing types and difficulties, each
    pointing back to a slide page or transcript timestamp in `source_ref`.
+   Where past exams or exercise sheets are included, they show how this
+   professor actually tests: weight `exam_focus` by them and write questions
+   in their style. Figures the student clipped into the notes and text they
+   highlighted on the slides are what they found important — make sure those
+   are covered.
 3. List the topics most likely to appear on the exam, and the gaps or mistakes
    you see in the student's notes.
 4. The recording also catches students chatting near the microphone. In
@@ -122,13 +127,52 @@ def _transcript_section(lecture: Lecture) -> str:
     return head + "\n\n".join(parts)
 
 
+FIGURE_RE = re.compile(r"!\[([^\]]*)\]\((figures/[^)\s]+)\)")
+
+
+def _notes_section(lecture: Lecture) -> str:
+    """The notes, with each clipped figure replaced by what Claude can read of it."""
+    count = 0
+
+    def figure(match: re.Match) -> str:
+        nonlocal count
+        count += 1
+        source = lecture.figure_source(lecture.path / match.group(2))
+        lines = [f"> **[Figure F{count} — {source.get('caption') or match.group(1)}]** (clipped by the student as important)"]
+        if source.get("text") and not source.get("tables"):  # a table already carries its text, in order
+            lines.append("> Text in the figure: " + " ".join(source["text"].split()))
+        for table in source.get("tables", []):
+            lines += [">", *(f"> {row}" for row in table.splitlines())]
+        return "\n".join(lines)
+
+    notes = FIGURE_RE.sub(figure, lecture.read_notes().strip())
+    return notes or "_No notes yet._"
+
+
+def _pdf_section(pdf: Path, unit: str = "Page") -> str:
+    pages = pdf_tools.page_texts(pdf)
+    marks = pdf_tools.highlights(pdf)
+    blocks = []
+    for i, text in enumerate(pages, start=1):
+        if not text:
+            continue
+        marked = "".join(f"\n- ✎ highlighted: {m}" for m in marks.get(i, []))
+        blocks.append(f"**{unit} {i}**{marked}\n\n{text}")
+    return f"### {pdf.name}\n\n" + ("\n\n".join(blocks) or "_No extractable text (scanned?)._")
+
+
 def _slides_section(lecture: Lecture) -> str:
+    return "\n\n".join(_pdf_section(pdf) for pdf in lecture.pdfs()) or "_No slides._"
+
+
+def _course_material_section(subject: Subject) -> str:
+    """Past exams and exercise sheets of the whole subject."""
     parts = []
-    for pdf in lecture.pdfs():
-        pages = pdf_tools.page_texts(pdf)
-        body = "\n\n".join(f"**Page {i}**\n\n{text}" for i, text in enumerate(pages, start=1) if text)
-        parts.append(f"### {pdf.name}\n\n{body or '_No extractable text (scanned slides?)._'}")
-    return "\n\n".join(parts) or "_No slides._"
+    for kind, title in (("exams", "Past Exams"), ("exercises", "Exercise Sheets")):
+        pdfs = sorted(subject.dir(kind).glob("*.pdf"))
+        if pdfs:
+            parts.append(f"### {title}\n\n" + "\n\n".join(_pdf_section(pdf).replace("### ", "#### ", 1) for pdf in pdfs))
+    return "\n\n".join(parts) or "_None added yet._"
 
 
 def build_context(lecture: Lecture, professor: ProfessorProfile | None, n_questions: int = 10) -> str:
@@ -151,7 +195,7 @@ def build_context(lecture: Lecture, professor: ProfessorProfile | None, n_questi
 
 ## Student Notes
 
-{lecture.read_notes().strip() or "_No notes yet._"}
+{_notes_section(lecture)}
 
 ## Lecture Transcript
 
@@ -160,6 +204,10 @@ def build_context(lecture: Lecture, professor: ProfessorProfile | None, n_questi
 ## Slides
 
 {_slides_section(lecture)}
+
+## Past Exams and Exercises ({subject.name}, all lectures)
+
+{_course_material_section(subject)}
 """
 
 

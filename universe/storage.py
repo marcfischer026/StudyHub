@@ -16,6 +16,8 @@ Layout::
             slides/                  PDFs
             transcripts/             whisper.cpp output (*.json, *.txt)
             ai/                      Context.md exports and imported AI responses
+            figures/                 graphics clipped from PDFs into the notes (PNG + JSON with
+                                     source, text and tables, which the Claude export uses)
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from pathlib import Path
 
 from . import config
 
-LECTURE_SUBDIRS = ("audio", "slides", "transcripts", "ai")
+LECTURE_SUBDIRS = ("audio", "slides", "transcripts", "ai", "figures")
 SUBJECT_SUBDIRS = ("exams", "exercises")
 AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
 
@@ -188,6 +190,21 @@ class Lecture:
 
     def write_anchors(self, anchors: list[dict]) -> None:
         _write_json(self.path / "notes.anchors.json", {"anchors": anchors})
+
+    def add_figure(self, png: bytes, source: dict) -> Path:
+        """Store a graphic clipped from a PDF. ``source`` (pdf, page, text, tables, …)
+        is kept next to it as JSON. Returns the PNG path."""
+        folder = self.dir("figures")
+        stem = re.sub(r"[^\w.-]+", "-", f"{Path(source.get('pdf', 'figure')).stem}-p{source.get('page', 0)}").strip("-")
+        path, n = folder / f"{stem}.png", 2  # no spaces: Markdown image links break on them
+        while path.exists():
+            path, n = folder / f"{stem}-{n}.png", n + 1
+        path.write_bytes(png)
+        _write_json(path.with_suffix(".json"), source)
+        return path
+
+    def figure_source(self, png: Path) -> dict:
+        return _read_json(png.with_suffix(".json"))
 
     def pdfs(self) -> list[Path]:
         return sorted(self.dir("slides").glob("*.pdf"))

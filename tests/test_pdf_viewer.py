@@ -89,6 +89,20 @@ class PdfViewerTests(unittest.TestCase):
         with pymupdf.open(self.path) as doc:
             self.assertEqual(len(list(doc[0].annots())), 1)
 
+    def test_snip_clips_an_area_even_when_starting_on_text(self):
+        viewer = self.open_viewer()
+        clipped = []
+        viewer.figureClipped.connect(clipped.append)
+        viewer.snipper.setChecked(True)
+        self.drag(viewer, (60, 95), (300, 140))  # starts on "Entropy": still a box, not a text selection
+        self.assertEqual(len(clipped), 1)
+        figure = clipped[0]
+        self.assertTrue(figure["png"].startswith(b"\x89PNG"))
+        self.assertEqual((figure["pdf"], figure["page"]), ("lecture.pdf", 1))
+        self.assertIn("Second line here", figure["text"])
+        with pymupdf.open(self.path) as doc:
+            self.assertEqual(len(list(doc[0].annots())), 0)  # snipping leaves the PDF alone
+
     def test_selection_on_rotated_page(self):
         viewer = self.open_viewer(rotation=90)
         self.drag(viewer, (60, 95), (200, 95))
