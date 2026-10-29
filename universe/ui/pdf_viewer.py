@@ -36,6 +36,7 @@ KEEP_RENDERED = 6  # pages beyond this distance from the viewport drop their pix
 
 class PdfViewer(QWidget):
     pdfImported = Signal(object)  # Path
+    interacted = Signal()  # the user scrolled, clicked or switched files here
 
     def __init__(self, ensure_folder: Callable[[str], Path | None], noun: str = "slides", parent=None):
         """Shows the PDFs in one folder. ``ensure_folder(name_hint)`` returns the
@@ -55,6 +56,7 @@ class PdfViewer(QWidget):
 
         self.files = QComboBox()
         self.files.currentIndexChanged.connect(self._open_selected)
+        self.files.activated.connect(self.interacted)
         import_btn = QPushButton("Import PDF…")
         import_btn.clicked.connect(self.import_pdf)
 
@@ -67,6 +69,9 @@ class PdfViewer(QWidget):
         self.page = QSpinBox(minimum=1, maximum=1)
         self.page.setKeyboardTracking(False)
         self.page.valueChanged.connect(self.go_to_page)
+        for control in (self.prev_btn, self.next_btn):
+            control.clicked.connect(self.interacted)
+        self.page.valueChanged.connect(self.interacted)
         self.page_count = QLabel("/ 0")
         zoom_out = QToolButton(text="−")
         zoom_out.setToolTip("Zoom out")
@@ -129,6 +134,10 @@ class PdfViewer(QWidget):
             self.files.setCurrentIndex(max(0, self.files.findData(str(select))))
         self.files.blockSignals(False)
         self._open_selected()
+
+    def current(self) -> tuple[str, int] | None:
+        """Open file name and page, if a PDF is showing."""
+        return (self.files.currentText(), self.page.value()) if self.doc is not None else None
 
     def open_page(self, pdf_name: str, page: int) -> None:
         index = self.files.findText(pdf_name)
@@ -249,6 +258,8 @@ class PdfViewer(QWidget):
         QTimer.singleShot(0, lambda: self.go_to_page(keep_page))
 
     def eventFilter(self, obj, event) -> bool:
+        if event.type() in (QEvent.Type.Wheel, QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
+            self.interacted.emit()
         if obj is self.scroll.viewport() and event.type() == QEvent.Type.Resize and self.fit_mode:
             self._refit.start()
         if obj is self.scroll and event.type() == QEvent.Type.KeyPress and event.modifiers() == Qt.KeyboardModifier.NoModifier:

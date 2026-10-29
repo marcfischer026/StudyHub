@@ -10,6 +10,7 @@ Layout::
         Lectures/<Lecture>/
             lecture.json
             notes.md                 Markdown notes with [▶ HH:MM:SS] stamps
+            notes.anchors.json       hidden per-paragraph context: audio time, open PDF page
             audio/                   recordings ("BWL 2026-10-28 15.30.wav") and imported audio
             slides/                  PDFs
             transcripts/             whisper.cpp output (*.json, *.txt)
@@ -142,6 +143,14 @@ class Lecture:
 
     def write_notes(self, markdown: str) -> None:
         self.notes_path.write_text(markdown, encoding="utf-8")
+
+    def read_anchors(self) -> list[dict]:
+        """``[{"text": paragraph, "audio": stem, "t": seconds, "doc": kind, "pdf": name, "page": n}, …]``
+        in note order; every key but "text" is optional."""
+        return _read_json(self.path / "notes.anchors.json").get("anchors", [])
+
+    def write_anchors(self, anchors: list[dict]) -> None:
+        _write_json(self.path / "notes.anchors.json", {"anchors": anchors})
 
     def pdfs(self) -> list[Path]:
         return sorted(self.dir("slides").glob("*.pdf"))

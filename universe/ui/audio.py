@@ -188,10 +188,15 @@ class AudioController(QObject):
 
     def time_source(self) -> float | None:
         """Position for note timestamps: live recording of this lecture first, then playback."""
+        position = self.audio_position()
+        return position[1] if position else None
+
+    def audio_position(self) -> tuple[Path, float] | None:
+        """The audio file ``time_source`` refers to, with the position in it."""
         if self.recording and self.recording_lecture and self.lecture and self.recording_lecture.path == self.lecture.path:
-            return self.recorder.elapsed()
+            return self.recorder.path, self.recorder.elapsed()
         if self.player.path is not None:
-            return self.player.position()
+            return self.player.path, self.player.position()
         return None
 
     # --- playback -----------------------------------------------------------

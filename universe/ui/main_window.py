@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
 
         # centre: welcome page or the open lecture (header, notes, player)
         self.audio = AudioController(settings, self)
-        self.notes = NoteEditor(time_source=self.audio.time_source)
+        self.notes = NoteEditor(time_source=self.audio.time_source, context_source=lambda: self._note_context())
         self.player_bar = PlayerBar(self.audio)
         self.lecture_view = LectureView(self.notes, self.player_bar, self.professors)
         self.welcome = WelcomePage(self.workspace)
@@ -84,6 +84,10 @@ class MainWindow(QMainWindow):
         # Past exams and exercise sheets belong to the whole subject, not one lecture.
         self.exams = PdfViewer(lambda _hint: self._subject_folder("exams"), noun="past exams")
         self.exercises = PdfViewer(lambda _hint: self._subject_folder("exercises"), noun="exercises")
+        self.viewers = {"slides": self.pdf, "exams": self.exams, "exercises": self.exercises}
+        self._last_viewer = "slides"  # the one the user touched last, if several are visible
+        for kind, viewer in self.viewers.items():
+            viewer.interacted.connect(lambda kind=kind: setattr(self, "_last_viewer", kind))
         self.transcript = TranscriptPanel()
         self.ai = AIPanel(self.professors)
         self.recordings = RecordingsPanel(
@@ -305,6 +309,7 @@ class MainWindow(QMainWindow):
         self.audio.error.connect(lambda msg: QMessageBox.warning(self, "Audio", msg))
 
         self.notes.seekRequested.connect(self._seek_from_notes)
+        self.notes.anchorActivated.connect(self._jump_to_anchor)
         self.transcript.seekRequested.connect(self._seek_audio)
         self.transcript.labelsChanged.connect(self.schedule_index)
         self.transcript.classifyRequested.connect(self.classify)
@@ -522,6 +527,33 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No audio in this lecture yet.", 4000)
             return
         self.audio.seek(seconds)
+
+    def _note_context(self) -> dict:
+        """What a paragraph started now should remember: audio position and the PDF page in view."""
+        context = {}
+        position = self.audio.audio_position()
+        if position is not None:
+            context.update(audio=position[0].stem, t=round(position[1], 1))
+        visible = [k for k, v in self.viewers.items() if v.current() and v.isVisible() and not v.visibleRegion().isEmpty()]
+        if visible:
+            kind = self._last_viewer if self._last_viewer in visible else visible[0]
+            name, page = self.viewers[kind].current()
+            context.update(doc=kind, pdf=name, page=page)
+        return context
+
+    def _jump_to_anchor(self, context: dict) -> None:
+        if "t" in context:
+            if context.get("audio"):
+                self._seek_audio(context["audio"], context["t"])
+            else:
+                self._seek_from_notes(int(context["t"]))
+        viewer = self.viewers.get(context.get("doc", ""))
+        if viewer is not None and context.get("pdf"):
+            self.docks[context["doc"]].show()
+            self.docks[context["doc"]].raise_()
+            if viewer.files.findText(context["pdf"]) < 0:
+                self.statusBar().showMessage(f"“{context['pdf']}” is no longer there.", 4000)
+            viewer.open_page(context["pdf"], context.get("page", 1))
 
     def _seek_audio(self, stem: str, seconds: float) -> None:
         if not self.audio.select_stem(stem):
