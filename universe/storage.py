@@ -31,6 +31,10 @@ AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 # Names written by UniVerse before recordings were named "<abbr> <date> <time>".
 _LEGACY_RECORDING = re.compile(r"recording_(\d{8}_\d{6})")
+# "<abbr> 2026-10-28 15.30" or "... (2)": UniVerse's own recording names.
+_RECORDING_NAME = re.compile(r"(?P<abbr>.*\S) (?P<when>\d{4}-\d{2}-\d{2} \d{2}\.\d{2})(?: \(\d+\))?")
+# Date and time in other names, e.g. Voice Memos' "20261022 101500".
+_COMPACT_TIME = re.compile(r"(?<!\d)(\d{8})[ _-](\d{6})(?!\d)")
 # Words skipped when building an abbreviation from initials.
 _FILLER_WORDS = {
     "einführung", "grundlagen", "in", "ins", "im", "in die", "der", "die", "das", "des", "und", "zur", "zum",
@@ -71,6 +75,25 @@ def _read_json(path: Path) -> dict:
 
 def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def recording_time(path: Path) -> datetime:
+    """When a recording was made: from its name if UniVerse (or Voice Memos) named
+    it, else the file's modification time. Used to keep recordings in order."""
+    match = _RECORDING_NAME.fullmatch(path.stem)
+    if match:
+        return datetime.strptime(match.group("when"), "%Y-%m-%d %H.%M")
+    for pattern, fmt in ((_LEGACY_RECORDING, "%Y%m%d_%H%M%S"), (_COMPACT_TIME, "%Y%m%d %H%M%S")):
+        found = pattern.search(path.stem)
+        if found:
+            try:
+                return datetime.strptime(" ".join(found.groups()) if pattern is _COMPACT_TIME else found.group(1), fmt)
+            except ValueError:
+                pass
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return datetime.min
 
 
 def _now() -> str:
@@ -121,9 +144,9 @@ class Lecture:
         return sorted(self.dir("slides").glob("*.pdf"))
 
     def audio_files(self) -> list[Path]:
-        """Oldest first, so the newest recording is last."""
+        """In the order they were recorded, so the newest recording is last."""
         files = [p for p in self.dir("audio").iterdir() if p.suffix.lower() in AUDIO_SUFFIXES]
-        return sorted(files, key=lambda p: (p.stat().st_mtime, p.name))
+        return sorted(files, key=lambda p: (recording_time(p), p.name))
 
     def new_recording_path(self, when: datetime | None = None) -> Path:
         """``audio/BWL 2026-10-28 15.30.wav`` — subject abbreviation, date, time."""
@@ -158,6 +181,35 @@ class Lecture:
         extra = [transcripts / f"{audio.stem}{suffix}" for suffix in (".json", ".txt")]
         return [audio, *(p for p in extra if p.exists())]
 
+    def move_audio(self, audio: Path, target: "Lecture") -> Path:
+        """Move a recording and its transcripts to another lecture.
+
+        A recording UniVerse named after this subject ("BWL 2026-10-28 15.30")
+        takes the target subject's abbreviation, so names keep saying where it
+        belongs. Returns the new path."""
+        if target.path == self.path:
+            return audio
+        match = _RECORDING_NAME.fullmatch(audio.stem)
+        if match and match.group("abbr") == safe_name(self.subject.short_name):
+            stem = target.new_recording_path(recording_time(audio)).stem
+            if audio.suffix.lower() != ".wav":  # new_recording_path de-duplicates .wav names only
+                stem = _free_stem(target.dir("audio"), stem, audio.suffix)
+        else:
+            stem = _free_stem(target.dir("audio"), audio.stem, audio.suffix)
+        new_audio = target.dir("audio") / f"{stem}{audio.suffix}"
+        shutil.move(str(audio), str(new_audio))
+        source, dest = self.dir("transcripts"), target.dir("transcripts")
+        txt = source / f"{audio.stem}.txt"
+        if txt.exists():
+            shutil.move(str(txt), str(dest / f"{stem}.txt"))
+        js = source / f"{audio.stem}.json"
+        if js.exists():
+            data = _read_json(js)
+            data["audio"] = new_audio.name
+            _write_json(dest / f"{stem}.json", data)
+            js.unlink()
+        return new_audio
+
     def migrate_recording_names(self) -> bool:
         """Rename old ``recording_YYYYMMDD_HHMMSS`` files to the readable scheme.
         Returns True if anything was renamed."""
@@ -171,8 +223,12 @@ class Lecture:
         return changed
 
     def transcripts(self) -> list[Path]:
-        """whisper.cpp JSON transcripts, one per audio file."""
-        return sorted(self.dir("transcripts").glob("*.json"))
+        """whisper.cpp JSON transcripts, one per audio file, in recording order."""
+        audio = {p.stem: p for p in self.audio_files()}
+        return sorted(
+            self.dir("transcripts").glob("*.json"),
+            key=lambda t: (recording_time(audio.get(t.stem, t)), t.name),
+        )
 
     def import_file(self, source: Path, kind: str) -> Path:
         """Copy an external file (PDF, audio) into this lecture."""
@@ -183,6 +239,14 @@ class Lecture:
             n += 1
         shutil.copy2(source, target)
         return target
+
+
+def _free_stem(folder: Path, stem: str, suffix: str) -> str:
+    """``stem``, or ``stem (2)``, ``stem (3)``… — whichever is not taken in ``folder``."""
+    candidate, n = stem, 2
+    while (folder / f"{candidate}{suffix}").exists():
+        candidate, n = f"{stem} ({n})", n + 1
+    return candidate
 
 
 @dataclass(frozen=True)

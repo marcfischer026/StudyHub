@@ -2,7 +2,8 @@
 
 Click a line to hear it. Exam-relevant lines are highlighted (★), questions and
 answers marked, private talk greyed out, other voices than the lecturer's tagged
-(👥) — and right-click corrects any label or speaker.
+(👥) — and right-click corrects any label or speaker. With several recordings in
+a lecture, "All recordings" shows them as one transcript in recording order.
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ QUESTION_BG = QColor(47, 111, 237, 35)
 ICONS = {"question": "❓ ", "answer": "💬 ", "off_topic": "🔇 "}
 SOURCE_NAMES = {"rules": "exam cue", "local": "local AI", "claude": "Claude", "manual": "you"}
 
+ALL_RECORDINGS = "All recordings (in order)"
+
 FILTERS = (
     "All",
     "★ Exam-relevant",
@@ -55,8 +58,8 @@ class TranscriptPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.lecture: Lecture | None = None
-        self.transcript: Transcript | None = None
-        self.path: Path | None = None
+        self.parts: list[tuple[Path, Transcript]] = []  # what is shown: one transcript, or all in order
+        self.path: Path | None = None  # the single transcript shown; None for "All recordings"
 
         self.files = QComboBox()
         self.files.currentIndexChanged.connect(self._show_selected)
@@ -107,13 +110,20 @@ class TranscriptPanel(QWidget):
         self.refresh()
 
     def refresh(self, select_stem: str = "") -> None:
-        current = select_stem or (self.path.stem if self.path else "")
+        """Rebuild the recording chooser. Keeps the current choice; with several
+        transcripts and nothing chosen yet, shows them all together."""
+        previous = self.files.currentData() if self.files.count() else None
         self.files.blockSignals(True)
         self.files.clear()
-        for path in self.lecture.transcripts() if self.lecture else []:
+        paths = self.lecture.transcripts() if self.lecture else []
+        if len(paths) > 1:
+            self.files.addItem(ALL_RECORDINGS, ALL_RECORDINGS)
+        for path in paths:
             self.files.addItem(path.stem, str(path))
-        if current:
-            self.files.setCurrentIndex(max(0, self.files.findText(current)))
+        if select_stem:
+            self.files.setCurrentIndex(max(0, self.files.findText(select_stem)))
+        elif previous is not None and self.files.findData(previous) >= 0:
+            self.files.setCurrentIndex(self.files.findData(previous))
         self.files.blockSignals(False)
         self._show_selected()
 
@@ -128,25 +138,56 @@ class TranscriptPanel(QWidget):
         scroll = self.list.verticalScrollBar().value()
         self.list.clear()
         data = self.files.currentData()
-        self.path = Path(data) if data else None
-        self.transcript = Transcript.load(self.path) if self.path else None
-        self.classify_btn.setEnabled(self.transcript is not None and self.progress.isHidden())
-        if self.transcript is None:
+        if data == ALL_RECORDINGS:
+            self.path = None
+            paths = self.lecture.transcripts() if self.lecture else []
+        else:
+            self.path = Path(data) if data else None
+            paths = [self.path] if self.path else []
+        self.parts = [(path, Transcript.load(path)) for path in paths]
+        self.classify_btn.setEnabled(bool(self.parts) and self.progress.isHidden())
+        if not self.parts:
             self.list.addItem("No transcript yet. Record or import audio, then press Transcribe.")
             self.summary.clear()
             return
-        stem = Path(self.transcript.audio).stem
-        for index, seg in enumerate(self.transcript.segments):
-            item = QListWidgetItem()
-            item.setData(ROLE, (stem, seg.start, index))
-            self._style_item(item, index)
-            self.list.addItem(item)
+        for part, (path, transcript) in enumerate(self.parts):
+            stem = Path(transcript.audio).stem
+            if len(self.parts) > 1:
+                self.list.addItem(self._heading(path.stem, part))
+            for index, seg in enumerate(transcript.segments):
+                item = QListWidgetItem()
+                item.setData(ROLE, (stem, seg.start, index, part))
+                self._style_item(item)
+                self.list.addItem(item)
         self._apply_filter()
         self._update_summary()
         self.list.verticalScrollBar().setValue(scroll)
 
-    def _style_item(self, item: QListWidgetItem, index: int) -> None:
-        seg = self.transcript.segments[index]
+    def _heading(self, name: str, part: int) -> QListWidgetItem:
+        """Divider between recordings in the "All recordings" view."""
+        item = QListWidgetItem(f"🎙  {part + 1}. {name}")
+        font = QFont(item.font())
+        font.setBold(True)
+        item.setFont(font)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)  # not selectable; carries no segment
+        item.setForeground(QBrush(self.list.palette().color(self.list.palette().ColorRole.PlaceholderText)))
+        return item
+
+    def _segment(self, item: QListWidgetItem):
+        _stem, _start, index, part = item.data(ROLE)
+        return self.parts[part][1].segments[index]
+
+    def _segment_items(self) -> list[QListWidgetItem]:
+        return [self.list.item(i) for i in range(self.list.count()) if self.list.item(i).data(ROLE)]
+
+    def _save(self, items: list[QListWidgetItem]) -> None:
+        """Write back the transcripts the changed lines belong to."""
+        for part in sorted({item.data(ROLE)[3] for item in items}):
+            path, transcript = self.parts[part]
+            transcript.save(path.parent)
+
+    def _style_item(self, item: QListWidgetItem) -> None:
+        seg = self._segment(item)
         star = "★ " if seg.exam else ""
         voice = "" if not seg.speaker else "🎓 " if seg.speaker == speakers.LECTURER else f"👥 {speakers.speaker_name(seg.speaker)}: "
         item.setText(f"{star}{ICONS.get(seg.category, '')}{make_stamp(seg.start)}  {voice}{seg.text}")
@@ -172,13 +213,12 @@ class TranscriptPanel(QWidget):
         item.setToolTip(" · ".join(details) + ("\nVoice: " + " · ".join(voice) if voice else "") + "\nRight-click to change.")
 
     def _apply_filter(self) -> None:
-        if self.transcript is None:
+        if not self.parts:
             return
         mode = self.filter.currentText()
         needle = self.find.text().lower()
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            seg = self.transcript.segments[item.data(ROLE)[2]]
+        for item in self._segment_items():
+            seg = self._segment(item)
             show = {
                 "★ Exam-relevant": seg.exam,
                 "Questions & answers": seg.category in ("question", "answer"),
@@ -190,7 +230,7 @@ class TranscriptPanel(QWidget):
             item.setHidden(not show or (bool(needle) and needle not in seg.text.lower()))
 
     def _update_summary(self) -> None:
-        segs = self.transcript.segments if self.transcript else []
+        segs = [seg for _path, transcript in self.parts for seg in transcript.segments]
         exam = sum(s.exam for s in segs)
         private = sum(s.private for s in segs)
         questions = sum(s.category == "question" for s in segs)
@@ -211,9 +251,9 @@ class TranscriptPanel(QWidget):
         items = [i for i in self.list.selectedItems() if i.data(ROLE)] or [
             i for i in [self.list.itemAt(pos)] if i is not None and i.data(ROLE)
         ]
-        if not items or self.transcript is None:
+        if not items or not self.parts:
             return
-        segs = [self.transcript.segments[i.data(ROLE)[2]] for i in items]
+        segs = [self._segment(i) for i in items]
         menu = QMenu(self)
         exam_now = all(s.exam for s in segs)
         menu.addAction("☆ Not exam-relevant" if exam_now else "★ Exam-relevant", lambda: self._set(items, exam=not exam_now))
@@ -224,35 +264,36 @@ class TranscriptPanel(QWidget):
         menu.addAction("🎓 The lecturer said this", lambda: self._set_speaker(items, speakers.LECTURER))
         menu.addAction("👥 Someone else said this", lambda: self._set_speaker(items, speakers.OTHER))
         voices = {s.speaker for s in segs}
-        if len(voices) == 1 and (voice := voices.pop()) not in ("", speakers.LECTURER, speakers.OTHER):
+        parts = {i.data(ROLE)[3] for i in items}  # speaker ids only mean something within one recording
+        if len(voices) == 1 and len(parts) == 1 and (voice := voices.pop()) not in ("", speakers.LECTURER, speakers.OTHER):
+            part = parts.pop()
             menu.addAction(
                 f"🎓 {speakers.speaker_name(voice)} is the lecturer (whole recording)",
-                lambda: self._make_lecturer(voice),
+                lambda: self._make_lecturer(voice, part),
             )
         menu.exec(self.list.viewport().mapToGlobal(pos))
 
     def _set_speaker(self, items: list[QListWidgetItem], speaker: str) -> None:
         for item in items:
-            self.transcript.segments[item.data(ROLE)[2]].speaker = speaker
-        self._save_speakers()
+            self._segment(item).speaker = speaker
+        self._save_speakers(items)
 
-    def _make_lecturer(self, speaker: str) -> None:
-        speakers.make_lecturer(self.transcript, speaker)
-        self._save_speakers()
+    def _make_lecturer(self, speaker: str, part: int = 0) -> None:
+        speakers.make_lecturer(self.parts[part][1], speaker)
+        self._save_speakers([i for i in self._segment_items() if i.data(ROLE)[3] == part])
 
-    def _save_speakers(self) -> None:
-        for i in range(self.list.count()):
-            self._style_item(self.list.item(i), self.list.item(i).data(ROLE)[2])
-        self.transcript.save(self.path.parent)
+    def _save_speakers(self, changed: list[QListWidgetItem]) -> None:
+        for item in self._segment_items():
+            self._style_item(item)
+        self._save(changed)
         self._apply_filter()
         self.labelsChanged.emit(self.lecture)
 
     def _set(self, items: list[QListWidgetItem], category: str | None = None, exam: bool | None = None) -> None:
         for item in items:
-            index = item.data(ROLE)[2]
-            relevance.set_manual(self.transcript.segments[index], category=category, exam=exam)
-            self._style_item(item, index)
-        self.transcript.save(self.path.parent)
+            relevance.set_manual(self._segment(item), category=category, exam=exam)
+            self._style_item(item)
+        self._save(items)
         self._apply_filter()
         self._update_summary()
         self.labelsChanged.emit(self.lecture)

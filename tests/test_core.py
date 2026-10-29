@@ -113,6 +113,47 @@ class StorageTests(unittest.TestCase):
         self.assertTrue((lecture.dir("transcripts") / "BWL 2026-10-28 15.30.txt").exists())
         self.assertFalse(lecture.migrate_recording_names())
 
+    def test_recordings_and_transcripts_in_recording_order(self):
+        lecture = self.ws.create_subject("Einführung ins BWL").create_lecture("VL 1")
+        # Created out of order on purpose: file dates must not decide the order.
+        names = ["BWL 2026-10-28 15.44.wav", "Mitschnitt 20261028 090000.m4a", "BWL 2026-10-28 15.30.wav"]
+        for name in names:
+            (lecture.dir("audio") / name).write_bytes(b"")
+            Transcript(name, [Segment(0, 1, name)]).save(lecture.dir("transcripts"))
+        expected = ["Mitschnitt 20261028 090000", "BWL 2026-10-28 15.30", "BWL 2026-10-28 15.44"]
+        self.assertEqual([p.stem for p in lecture.audio_files()], expected)
+        self.assertEqual([p.stem for p in lecture.transcripts()], expected)
+
+    def test_move_recording_to_another_lecture(self):
+        from datetime import datetime
+
+        bwl = self.ws.create_subject("Einführung ins BWL").create_lecture("VL 1")
+        cf = self.ws.create_subject("Corporate Finance").create_lecture("Week 1")
+        audio = bwl.new_recording_path(datetime(2026, 10, 28, 15, 30))
+        audio.write_bytes(b"RIFF")
+        Transcript(audio.name, [Segment(0, 1, "NPV", exam=True)]).save(bwl.dir("transcripts"))
+
+        moved = bwl.move_audio(audio, cf)
+
+        self.assertEqual(moved.name, "CF 2026-10-28 15.30.wav")  # takes the new subject's abbreviation
+        self.assertEqual(bwl.audio_files(), [])
+        self.assertEqual(list(bwl.dir("transcripts").iterdir()), [])
+        self.assertEqual(cf.audio_files(), [moved])
+        transcript = Transcript.load(cf.dir("transcripts") / "CF 2026-10-28 15.30.json")
+        self.assertEqual(transcript.audio, moved.name)
+        self.assertTrue(transcript.segments[0].exam)  # labels travel with it
+        self.assertTrue((cf.dir("transcripts") / "CF 2026-10-28 15.30.txt").exists())
+
+    def test_move_keeps_other_names_and_avoids_clashes(self):
+        subject = self.ws.create_subject("Mathe")
+        first, second = subject.create_lecture("A"), subject.create_lecture("B")
+        for lecture in (first, second):
+            (lecture.dir("audio") / "Memo.m4a").write_bytes(b"x")
+        moved = first.move_audio(first.dir("audio") / "Memo.m4a", second)
+        self.assertEqual(moved.name, "Memo (2).m4a")
+        self.assertEqual(sorted(p.name for p in second.audio_files()), ["Memo (2).m4a", "Memo.m4a"])
+        self.assertEqual(second.move_audio(moved, second), moved)  # same lecture: nothing happens
+
     def test_safe_name(self):
         self.assertEqual(safe_name("a/b:c"), "a_b_c")
         with self.assertRaises(ValueError):

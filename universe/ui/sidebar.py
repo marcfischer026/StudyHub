@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import subprocess
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
@@ -21,8 +22,68 @@ from PySide6.QtWidgets import (
 )
 
 from ..storage import Lecture, Subject, Workspace
+from .audio import recordings_from_mime
 
 ROLE = Qt.ItemDataRole.UserRole
+DROP_BG = QColor(47, 111, 237, 60)  # translucent accent: works in light and dark mode
+
+
+class _LectureTree(QTreeWidget):
+    """Subject/lecture tree that takes recordings dragged from the Recordings panel."""
+
+    recordingsDropped = Signal(list, object)  # list[Path], target Lecture
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self._hover: QTreeWidgetItem | None = None
+
+    def _target(self, event) -> Lecture | None:
+        paths = recordings_from_mime(event.mimeData())
+        item = self.itemAt(event.position().toPoint())
+        lecture = item.data(0, ROLE) if item is not None else None
+        if not paths or not isinstance(lecture, Lecture):
+            return None
+        if all(p.parent.parent == lecture.path for p in paths):
+            return None  # already there
+        return lecture
+
+    def _highlight(self, item: QTreeWidgetItem | None) -> None:
+        if self._hover is not None and self._hover is not item:
+            self._hover.setBackground(0, QBrush())
+        self._hover = item
+        if item is not None:
+            item.setBackground(0, QBrush(DROP_BG))
+
+    def dragEnterEvent(self, event) -> None:
+        if recordings_from_mime(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        target = self._target(event)
+        self._highlight(self.itemAt(event.position().toPoint()) if target else None)
+        if target is None:
+            event.ignore()
+        else:
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._highlight(None)
+
+    def dropEvent(self, event) -> None:
+        target = self._target(event)
+        self._highlight(None)
+        if target is None:
+            event.ignore()
+            return
+        paths = recordings_from_mime(event.mimeData())
+        event.setDropAction(Qt.DropAction.MoveAction)
+        event.accept()
+        # Move once the drag has finished: the source list must not be rebuilt mid-drag.
+        QTimer.singleShot(0, lambda: self.recordingsDropped.emit(paths, target))
 
 
 class Sidebar(QWidget):
@@ -33,6 +94,7 @@ class Sidebar(QWidget):
     lectureRenamed = Signal(str, object)  # old name, renamed Lecture
     aboutToChange = Signal()  # before a rename/delete moves files on disk
     subjectChanged = Signal(object)  # Subject metadata edited (e.g. abbreviation)
+    recordingsDropped = Signal(list, object)  # list[Path], target Lecture
 
     def __init__(self, workspace: Workspace, parent=None):
         super().__init__(parent)
@@ -42,7 +104,8 @@ class Sidebar(QWidget):
         self.filter.setClearButtonEnabled(True)
         self.filter.textChanged.connect(self._apply_filter)
 
-        self.tree = QTreeWidget()
+        self.tree = _LectureTree()
+        self.tree.recordingsDropped.connect(self.recordingsDropped)
         self.tree.setObjectName("subjectTree")
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(16)
@@ -106,6 +169,17 @@ class Sidebar(QWidget):
         self._apply_filter(self.filter.text())
         if target is not None:
             self.tree.setCurrentItem(target)
+
+    def update_icons(self) -> None:
+        """🎙 for lectures with recordings, 📝 for the rest — after recordings moved."""
+        for i in range(self.tree.topLevelItemCount()):
+            s_item = self.tree.topLevelItem(i)
+            for j in range(s_item.childCount()):
+                item = s_item.child(j)
+                lecture = item.data(0, ROLE)
+                if lecture.path.exists():
+                    icon = "🎙" if lecture.audio_files() else "📝"
+                    item.setText(0, f"{icon}  {lecture.name}")
 
     def select_by_name(self, subject_name: str, lecture_name: str) -> None:
         subject = self.workspace.subject(subject_name) if subject_name else None

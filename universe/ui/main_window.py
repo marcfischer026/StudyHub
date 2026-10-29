@@ -83,7 +83,11 @@ class MainWindow(QMainWindow):
         self.pdf = PdfViewer(ensure_lecture=self.ensure_lecture)
         self.transcript = TranscriptPanel()
         self.ai = AIPanel(self.professors)
-        self.recordings = RecordingsPanel(self.audio, ensure_lecture=self.ensure_lecture)
+        self.recordings = RecordingsPanel(
+            self.audio,
+            ensure_lecture=self.ensure_lecture,
+            lectures=lambda: [lec for subject in self.workspace.subjects() for lec in subject.lectures()],
+        )
         self.docks: dict[str, QDockWidget] = {}
         for key, title, widget in (
             ("workspace", "Subjects", self.sidebar),
@@ -262,6 +266,8 @@ class MainWindow(QMainWindow):
         self.audio.recordingFinished.connect(self._on_recording_finished)
         self.audio.transcribeRequested.connect(self.transcribe)
         self.recordings.deleteRequested.connect(self.delete_recordings)
+        self.recordings.moveRequested.connect(self.move_recordings)
+        self.sidebar.recordingsDropped.connect(self.move_recordings)
         self.audio.silenceDetected.connect(
             lambda: self.statusBar().showMessage("⚠ The microphone is silent — click the warning in the toolbar for help.")
         )
@@ -419,6 +425,46 @@ class MainWindow(QMainWindow):
         self.schedule_index(lecture)
         moved = sum(not p.exists() for p in paths)
         self.statusBar().showMessage(f"Moved {moved} recording{'s' * (moved != 1)} to the Trash.", 6000)
+
+    def move_recordings(self, paths: list[Path], target: Lecture) -> None:
+        """Move recordings (with transcripts and labels) to another lecture, e.g. one
+        recorded while the wrong lecture was open. They slot in by recording time."""
+        lecture = self.lecture
+        paths = [p for p in paths if lecture is not None and p.parent == lecture.dir("audio") and p.exists()]
+        if not paths or target.path == lecture.path:
+            self.recordings.refresh()
+            return
+        if self.audio.recording and self.audio.recorder.path in paths:
+            QMessageBox.information(self, "Move recording", "Stop the recording before moving it.")
+            self.recordings.refresh()
+            return
+        busy = [p.stem for p in paths if self.jobs.find(("transcribe", str(p)))]
+        if busy:
+            QMessageBox.information(
+                self, "Move recording", "Wait until transcribing has finished:\n" + "\n".join(f"• {s}" for s in busy)
+            )
+            self.recordings.refresh()
+            return
+        if self.audio.current in paths:
+            self.audio.release()
+        moved, failed = [], []
+        for path in paths:
+            try:
+                moved.append(lecture.move_audio(path, target))
+            except OSError as exc:
+                failed.append(f"{path.name}: {exc}")
+        if failed:
+            QMessageBox.warning(self, "Move recording", "Could not move:\n" + "\n".join(failed))
+        self.audio.set_lecture(lecture)  # reload the list and player
+        self.transcript.refresh()
+        self.sidebar.update_icons()
+        self.schedule_index(lecture)
+        self.schedule_index(target)
+        if moved:
+            count = f"{len(moved)} recording{'s' * (len(moved) != 1)}"
+            renamed = [p.stem for p, m in zip(paths, moved) if p.stem != m.stem]
+            note = f" (renamed to {', '.join(m.stem for m in moved)})" if renamed else ""
+            self.statusBar().showMessage(f"Moved {count} to {target.subject.name} › {target.name}{note}.", 8000)
 
     def _on_recording_changed(self, recording: bool) -> None:
         if recording:

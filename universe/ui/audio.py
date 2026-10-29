@@ -14,7 +14,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QMimeData, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -463,17 +463,52 @@ class PlayerBar(QWidget):
             self.slider.setValue(int(pos * 10))
 
 
+RECORDINGS_MIME = "application/x-universe-recordings"  # newline-separated paths
+
+
+def recordings_from_mime(mime: QMimeData) -> list[Path]:
+    if not mime.hasFormat(RECORDINGS_MIME):
+        return []
+    return [Path(p) for p in bytes(mime.data(RECORDINGS_MIME)).decode("utf-8").splitlines() if p]
+
+
+class _RecordingList(QListWidget):
+    """Recordings can be dragged onto a lecture in the sidebar to move them there.
+    Only an app-internal format is offered, so dropping on Finder does nothing."""
+
+    def __init__(self):
+        super().__init__()
+        self.setDragEnabled(True)
+        self.setDragDropMode(QListWidget.DragDropMode.DragOnly)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def mimeTypes(self) -> list[str]:
+        return [RECORDINGS_MIME]
+
+    def mimeData(self, items) -> QMimeData:
+        mime = QMimeData()
+        mime.setData(RECORDINGS_MIME, "\n".join(str(item.data(ROLE)) for item in items).encode("utf-8"))
+        return mime
+
+    def supportedDropActions(self) -> Qt.DropAction:
+        return Qt.DropAction.MoveAction
+
+
 class RecordingsPanel(QWidget):
     """Dock: list of the lecture's audio, import, delete, transcription settings."""
 
     deleteRequested = Signal(list)  # list[Path] the user chose to delete
+    moveRequested = Signal(list, object)  # list[Path], target Lecture
 
-    def __init__(self, audio: AudioController, ensure_lecture, parent=None):
-        """``ensure_lecture(name_hint)`` returns the open lecture or creates one."""
+    def __init__(self, audio: AudioController, ensure_lecture, lectures=None, parent=None):
+        """``ensure_lecture(name_hint)`` returns the open lecture or creates one;
+        ``lectures()`` lists all lectures, for the "Move to" menu."""
         super().__init__(parent)
         self.audio = audio
         self.ensure_lecture = ensure_lecture
-        self.list = QListWidget()
+        self.lectures = lectures or (lambda: [])
+        self.list = _RecordingList()
+        self.list.setToolTip("Drag recordings onto a lecture in the sidebar to move them there.")
         self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # ⌘/⇧-click to delete several
         self.list.itemClicked.connect(lambda item: audio.select(item.data(ROLE)))
         self.list.itemDoubleClicked.connect(lambda item: (audio.select(item.data(ROLE)), audio.seek(0)))
@@ -592,10 +627,27 @@ class RecordingsPanel(QWidget):
             self.list.setCurrentItem(item)
         menu = QMenu(self)
         menu.addAction("Transcribe", lambda: self.audio.transcribeRequested.emit(item.data(ROLE)))
+        self._add_move_menu(menu)
         menu.addSeparator()
         count = len(self.list.selectedItems())
         menu.addAction("Move to Trash…" if count == 1 else f"Move {count} recordings to Trash…", self._delete)
         menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def _add_move_menu(self, menu: QMenu) -> None:
+        current = self.audio.lecture
+        others = [lec for lec in self.lectures() if current is None or lec.path != current.path]
+        if not others:
+            return
+        move = menu.addMenu("Move to Lecture")
+        paths = self.selected_paths()
+        subject = None
+        for lecture in others:
+            if subject is None or lecture.subject.path != subject.path:
+                if subject is not None:
+                    move.addSeparator()
+                subject = lecture.subject
+                move.addSection(subject.name)
+            move.addAction(lecture.name, lambda lec=lecture: self.moveRequested.emit(paths, lec))
 
     def _delete(self) -> None:
         if self.list.selectedItems():
