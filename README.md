@@ -11,7 +11,7 @@ A local-first university learning workspace for Apple Silicon Macs. Organise any
 - **Notes in the centre**: rich-text editor saved as Markdown with autosave, the lecture header (subject, professor) above it and the audio player (`pygame.mixer`, ±10 s, slider) below it.
 - **Dockable panels** (`QDockWidget`) around it — drag, float, tab or close them. Closed panels come back from the **▦ Panels** button (top right of the toolbar), the *View* menu, or `⌘1`–`⌘5`; *Reset Layout* in the same menu restores the default:
   - **Subjects**: subject/lecture tree.
-  - **Slides**: PDF viewer (PyMuPDF). Scroll continuously through all slides (trackpad, ↑/↓), flip with ←/→ or ◀ ▶, zoom with − / + / Fit (Fit follows the panel width). Drag PDFs onto it to import.
+  - **Slides**: PDF viewer (PyMuPDF). Scroll continuously through all slides (trackpad, ↑/↓), flip with ←/→ or ◀ ▶, zoom with − / + / Fit (Fit follows the panel width). Drag PDFs onto it to import. Drag across slide text to select it and copy it (⌘C or right-click → *Copy* / *Copy slide text*); the **Mark** tool highlights text or any area in yellow, green, blue or pink, saved into the PDF (right-click a mark to remove it).
   - **Transcript**: whisper.cpp segments; click a line to play from there.
   - **AI Tutor**: Claude export/import, interactive Quiz, Analysis, and Search tabs.
   - **Recordings**: the lecture's audio files (`sounddevice` records 16 kHz mono WAV), import, transcription, auto-transcribe switch.
