@@ -163,6 +163,49 @@ class LocalLLMTests(unittest.TestCase):
         self.assertEqual(len(labels), len(TEXTS))
         self.assertIn("S1.5 Nein, dann", seen_prompts[0])
 
+    def test_parse_accepts_wrapped_and_bare_json_lists(self):
+        items = [{"id": "S1.0", "category": "lecture", "exam": True, "reason": "exam"},
+                 {"id": "S1.1", "category": "off_topic", "exam": False, "reason": "chatter"}]
+        for reply in (json.dumps({"labels": items}), json.dumps(items),
+                      "Here you go:\n```json\n" + json.dumps(items) + "\n```"):
+            labels = local_llm._parse(reply)
+            self.assertEqual([l["id"] for l in labels], ["S1.0", "S1.1"], reply)
+            self.assertEqual(labels[1]["category"], "off_topic")
+        self.assertEqual(local_llm._parse("no labels here"), [])
+
+    def test_rank_models_prefers_benchmark_winner(self):
+        models = ["google/gemma-4-12b", "qwen3-14b-mlx", "qwen3.5-9b-mlx"]
+        self.assertEqual(local_llm.rank_models(models), ["qwen3.5-9b-mlx", "qwen3-14b-mlx", "google/gemma-4-12b"])
+        self.assertEqual(local_llm.rank_models(["b", "a"]), ["b", "a"])  # unknown models keep server order
+
+    def test_chat_prefills_empty_think_block(self):
+        sent = []
+
+        class FakeResponse:
+            def read(self, *args):
+                return json.dumps({"choices": [{"message": {"content": '{"labels": []}'}}]}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            sent.append(json.loads(request.data))
+            return FakeResponse()
+
+        original = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            self.assertEqual(local_llm.chat("http://x/v1", "qwen3.5-9b-mlx", "hi"), '{"labels": []}')
+        finally:
+            urllib.request.urlopen = original
+        messages = sent[0]["messages"]
+        self.assertEqual(messages[0], {"role": "user", "content": "hi"})
+        self.assertEqual(messages[-1]["role"], "assistant")
+        self.assertIn("</think>", messages[-1]["content"])
+
     def test_unavailable_server_raises(self):
         settings = Settings(local_llm_url="http://127.0.0.1:9/v1")
         with self.assertRaises(local_llm.LocalLLMUnavailable):

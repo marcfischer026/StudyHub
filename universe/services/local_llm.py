@@ -25,6 +25,12 @@ from .transcriber import Transcript
 # LM Studio (1234), llama.cpp / mlx_lm servers (8080), Ollama (11434).
 DEFAULT_URLS = ("http://localhost:1234/v1", "http://localhost:8080/v1", "http://localhost:11434/v1")
 BATCH = 40
+# "Automatic" picks the first installed match, best first (see benchmarks/local_llm/:
+# qwen3.5-9b sorted 100 % of test segments correctly, qwen3-14b 85 %, gemma-4-12b 74 %).
+PREFERRED_MODELS = ("qwen3.5-9b", "qwen3-14b")
+# Qwen3.5 and Gemma 4 ignore "/no_think" and LM Studio offers no switch for them; starting
+# the reply after an empty think block stops the reasoning, which otherwise eats max_tokens.
+NO_THINK_PREFILL = {"role": "assistant", "content": "<think>\n\n</think>\n\n"}
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 PROMPT = """You sort the transcript of a university lecture recording for the course "{subject}".
@@ -68,6 +74,15 @@ def _get(url: str, timeout: float) -> dict:
         return json.load(response)
 
 
+def rank_models(models: list[str]) -> list[str]:
+    """Models in PREFERRED_MODELS order first, the rest in the server's order."""
+
+    def rank(model: str) -> int:
+        return next((i for i, p in enumerate(PREFERRED_MODELS) if p in model.lower()), len(PREFERRED_MODELS))
+
+    return sorted(models, key=rank)
+
+
 def find_server(settings: Settings) -> tuple[str, str]:
     """(base url, model id) of a running local server, or raise LocalLLMUnavailable."""
     urls = (settings.local_llm_url.rstrip("/"),) if settings.local_llm_url else DEFAULT_URLS
@@ -85,7 +100,7 @@ def find_server(settings: Settings) -> tuple[str, str]:
                 return url, settings.local_llm_model
             continue
         if chat_models:
-            return url, chat_models[0]
+            return url, rank_models(chat_models)[0]
     raise LocalLLMUnavailable(
         "No local AI server found. Start LM Studio's local server (or Ollama), or set local_llm_url in settings.json."
     )
@@ -93,7 +108,8 @@ def find_server(settings: Settings) -> tuple[str, str]:
 
 def chat(url: str, model: str, prompt: str, timeout: float = 600, ttl: int = 0) -> str:
     """``ttl``: seconds LM Studio may keep a model it loads on demand (JIT) for this request."""
-    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 3000}
+    messages = [{"role": "user", "content": prompt}, NO_THINK_PREFILL]
+    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 3000}
     if ttl:
         payload["ttl"] = ttl  # LM Studio: unload this JIT-loaded model after ttl idle seconds
     body = json.dumps(payload).encode()
@@ -110,7 +126,8 @@ def chat(url: str, model: str, prompt: str, timeout: float = 600, ttl: int = 0) 
 
 
 def _parse(text: str) -> list[dict]:
-    """Read "S1.4 O" / "S1.9 L* reason" lines; fall back to a JSON ``labels`` list."""
+    """Read "S1.4 O" / "S1.9 L* reason" lines; fall back to JSON — ``{"labels": [...]}``
+    or, as many models reply, the bare ``[...]`` list."""
     labels = [
         {"id": sid, "category": CODES[code], "exam": bool(star), "reason": reason.strip()[:80] if star else ""}
         for sid, code, star, reason in _LINE.findall(text)
@@ -119,11 +136,21 @@ def _parse(text: str) -> list[dict]:
         return labels
     from .claude_bridge import ResponseError, _extract_json
 
-    try:
-        data = json.loads(_extract_json(text))
-    except (ResponseError, json.JSONDecodeError):
+    data = None
+    bracket, brace = text.find("["), text.find("{")
+    if bracket != -1 and (brace == -1 or bracket < brace):
+        try:
+            data = json.JSONDecoder().raw_decode(text[bracket:])[0]
+        except json.JSONDecodeError:
+            pass
+    if data is None:
+        try:
+            data = json.loads(_extract_json(text))
+        except (ResponseError, json.JSONDecodeError):
+            return []
+    found = data.get("labels", []) if isinstance(data, dict) else data
+    if not isinstance(found, list):
         return []
-    found = data.get("labels", []) if isinstance(data, dict) else []
     return [l for l in found if isinstance(l, dict) and l.get("category", "lecture") in CATEGORIES]
 
 

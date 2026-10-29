@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import LANGUAGES, Settings, data_root, installed_models
-from ..services import lmstudio, local_llm
+from ..services import lmstudio, local_llm, moodle_ical
 from ..services.audio_recorder import AudioRecorder
 from . import workers
 from .workers import Worker
@@ -32,7 +32,7 @@ from .workers import Worker
 def find_models(settings: Settings) -> tuple[str, list[str]]:
     """(base url, chat model ids) of the local AI server ``settings`` points at."""
     url, model = local_llm.find_server(dataclasses.replace(settings, local_llm_model=""))
-    return url, lmstudio.chat_models(lmstudio.server_root(url)) or [model]
+    return url, local_llm.rank_models(lmstudio.chat_models(lmstudio.server_root(url)) or [model])
 
 
 def _form(*rows) -> QWidget:
@@ -62,11 +62,13 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(560)
         self.settings = settings
         self._worker: Worker | None = None
+        self._moodle_worker: Worker | None = None
 
         tabs = QTabWidget()
         tabs.addTab(self._transcription_tab(), "Transcription")
         tabs.addTab(self._recording_tab(), "Recording")
         tabs.addTab(self._local_ai_tab(), "Local AI")
+        tabs.addTab(self._moodle_tab(), "Moodle")
         tabs.addTab(self._power_tab(), "Battery")
         tabs.addTab(self._general_tab(), "General")
 
@@ -136,7 +138,7 @@ class SettingsDialog(QDialog):
         self.local_classify.setChecked(s.local_classify)
         self.local_llm_url = QLineEdit(s.local_llm_url, placeholderText="Automatic — try ports 1234, 8080, 11434")
         self.local_llm_model = QComboBox(editable=True)
-        self.local_llm_model.addItem("Automatic — first chat model", "")
+        self.local_llm_model.addItem("Automatic — best installed", "")
         if s.local_llm_model:
             self.local_llm_model.addItem(s.local_llm_model, s.local_llm_model)
         self.local_llm_model.setCurrentIndex(self.local_llm_model.findData(s.local_llm_model))
@@ -160,6 +162,33 @@ class SettingsDialog(QDialog):
             (None, test),
             ("Unload model after", self.unload_after),
             (None, _hint("Minutes without AI work before UniVerse unloads the model it used.")),
+        )
+
+    def _moodle_tab(self) -> QWidget:
+        self.moodle_url = QLineEdit(
+            self.settings.moodle_calendar_url,
+            placeholderText="https://elearning.dhbw-stuttgart.de/moodle/calendar/export_execute.php?…",
+        )
+        self.moodle_test_btn = QPushButton("Test calendar", autoDefault=False)
+        self.moodle_test_btn.clicked.connect(self._test_moodle)
+        self.moodle_result = _hint("")
+        test_row = QHBoxLayout()
+        test_row.setContentsMargins(0, 0, 0, 0)
+        test_row.addWidget(self.moodle_test_btn)
+        test_row.addWidget(self.moodle_result, 1)
+        test = QWidget()
+        test.setLayout(test_row)
+        return _form(
+            ("Calendar URL", self.moodle_url),
+            (None, test),
+            (
+                None,
+                _hint(
+                    "In Moodle: Calendar → Export calendar → All courses, Recent and next 60 days → "
+                    "Get calendar URL. Deadlines then show on the start page and on each subject. "
+                    "The URL works like a password for your calendar — don't share it."
+                ),
+            ),
         )
 
     def _power_tab(self) -> QWidget:
@@ -215,7 +244,7 @@ class SettingsDialog(QDialog):
         url, models = result
         chosen = self._model_value()
         self.local_llm_model.clear()
-        self.local_llm_model.addItem(f"Automatic — first chat model ({models[0]})" if models else "Automatic", "")
+        self.local_llm_model.addItem(f"Automatic — best installed ({models[0]})" if models else "Automatic", "")
         for model in models:
             self.local_llm_model.addItem(model, model)
         self.local_llm_model.setCurrentIndex(max(0, self.local_llm_model.findData(chosen)))
@@ -225,6 +254,24 @@ class SettingsDialog(QDialog):
     def _connection_failed(self, message: str) -> None:
         self.test_result.setText(f"✗ {message}")
         self.test_btn.setEnabled(True)
+
+    def _test_moodle(self) -> None:
+        self.moodle_test_btn.setEnabled(False)
+        self.moodle_result.setText("Downloading calendar…")
+        self._moodle_worker = Worker(lambda url: moodle_ical.parse(moodle_ical.fetch(url)), self.moodle_url.text())
+        self._moodle_worker.setAutoDelete(False)
+        self._moodle_worker.signals.finished.connect(self._moodle_found)
+        self._moodle_worker.signals.failed.connect(self._moodle_failed)
+        workers.run(self._moodle_worker)
+
+    def _moodle_found(self, events: list) -> None:
+        n = len(moodle_ical.upcoming(events))
+        self.moodle_result.setText(f"✓ {len(events)} events, {n} upcoming")
+        self.moodle_test_btn.setEnabled(True)
+
+    def _moodle_failed(self, message: str) -> None:
+        self.moodle_result.setText(f"✗ {message}")
+        self.moodle_test_btn.setEnabled(True)
 
     def apply(self) -> None:
         s = self.settings
@@ -238,6 +285,7 @@ class SettingsDialog(QDialog):
         s.local_llm_url = self.local_llm_url.text().strip()
         s.local_llm_model = self._model_value()
         s.local_llm_unload_after = self.unload_after.value() * 60
+        s.moodle_calendar_url = self.moodle_url.text().strip()
         s.battery_pause_below = self.battery_pause_below.value()
         s.only_when_charging = self.only_when_charging.isChecked()
         s.embedding_model = self.embedding_model.text().strip() or Settings().embedding_model

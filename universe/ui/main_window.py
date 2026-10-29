@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from ..config import Settings
 from ..professors import ProfessorStore
-from ..services import local_llm, relevance, transcriber
+from ..services import local_llm, moodle_ical, relevance, transcriber
 from ..services.vector_index import SubjectIndex, get_embedder
 from ..storage import Lecture, Subject, Workspace
 from . import workers
@@ -114,6 +114,12 @@ class MainWindow(QMainWindow):
         self.open_lecture(None)
         self.sidebar.select_by_name(settings.last_subject, settings.last_lecture)
         QTimer.singleShot(0, lambda: setattr(self, "_ready", True))
+        if settings.moodle_calendar_url:
+            self.welcome.set_events(moodle_ical.parse(moodle_ical.cached()))  # until the download below is done
+        self.refresh_moodle()
+        self._moodle_timer = QTimer(self, interval=60 * 60 * 1000)  # Moodle's export changes rarely
+        self._moodle_timer.timeout.connect(self.refresh_moodle)
+        self._moodle_timer.start()
         if transcriber.check_setup(settings):
             self.statusBar().showMessage("Transcription not set up — see Tools → Check Transcription Setup.", 8000)
 
@@ -706,6 +712,23 @@ class MainWindow(QMainWindow):
             self.record_controls._update_mic_tooltip()
             self.activity._apply_battery_rules()
             self.activity.refresh()
+            if not self.settings.moodle_calendar_url:
+                self.welcome.set_events([])
+            self.refresh_moodle()
+
+    def refresh_moodle(self) -> None:
+        url = self.settings.moodle_calendar_url
+        if not url:
+            return
+
+        def failed(message: str) -> None:
+            self.statusBar().showMessage(f"Moodle calendar not updated: {message}", 8000)
+
+        self._start(
+            Worker(lambda: moodle_ical.parse(moodle_ical.fetch(url))),
+            on_done=self.welcome.set_events,
+            on_fail=failed,
+        )
 
     def _check_whisper(self) -> None:
         problems = transcriber.check_setup(self.settings)

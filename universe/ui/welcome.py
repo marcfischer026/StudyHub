@@ -18,11 +18,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..professors import ProfessorStore
+from ..services import moodle_ical
 from ..storage import Lecture, Subject, Workspace
 from .audio import PlayerBar
 from .note_editor import NoteEditor
 
 ROLE = Qt.ItemDataRole.UserRole
+DEADLINES_SHOWN = 8
 
 
 def _card(title: str, body: str) -> QFrame:
@@ -65,6 +67,17 @@ class WelcomePage(QWidget):
         steps.addWidget(_card("2 · Record the lecture", "Hit ● Record. Notes with ⌘T get timestamps that replay the audio."))
         steps.addWidget(_card("3 · Study with Claude", "Export for Claude, paste the reply back, get quizzes tailored to your professor."))
 
+        self.events: list[moodle_ical.Event] = []
+        self.deadlines = QFrame()
+        self.deadlines.setObjectName("card")
+        self.deadlines.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        deadlines = QVBoxLayout(self.deadlines)
+        self.deadlines_title = QLabel()
+        self.deadlines_title.setObjectName("cardTitle")
+        self.deadlines_list = QLabel(textFormat=Qt.TextFormat.RichText, wordWrap=True)
+        deadlines.addWidget(self.deadlines_title)
+        deadlines.addWidget(self.deadlines_list)
+
         self.lectures = QListWidget()
         self.lectures.setObjectName("lectureList")
         self.lectures.itemClicked.connect(lambda item: self.openLecture.emit(item.data(ROLE)))
@@ -89,6 +102,7 @@ class WelcomePage(QWidget):
         column.addLayout(buttons)
         column.addSpacing(10)
         column.addWidget(self.steps)
+        column.addWidget(self.deadlines)
         column.addWidget(self.lectures, 1)
         column.addStretch()
 
@@ -103,8 +117,32 @@ class WelcomePage(QWidget):
         self.subject: Subject | None = None
         self.show_subject(None)
 
+    def set_events(self, events: list[moodle_ical.Event]) -> None:
+        """Moodle calendar events; the page shows the upcoming ones that fit the current view."""
+        self.events = events
+        self._show_deadlines()
+
+    def _show_deadlines(self) -> None:
+        events = moodle_ical.upcoming(self.events)
+        if self.subject is not None:
+            events = [e for e in events if moodle_ical.matches(e, self.subject.name, self.subject.short_name)]
+        self.deadlines.setVisible(bool(events))
+        if not events:
+            return
+        self.deadlines_title.setText("Upcoming in Moodle")
+        rows = []
+        for event in events[:DEADLINES_SHOWN]:
+            course = ""
+            if event.course and self.subject is None:  # on a subject page the course is obvious
+                course = f" <span style='opacity:0.55'>· {html.escape(event.course)}</span>"
+            rows.append(f"<b>{html.escape(moodle_ical.when(event))}</b> &nbsp;{html.escape(event.title)}{course}")
+        if len(events) > DEADLINES_SHOWN:
+            rows.append(f"<span style='opacity:0.55'>+ {len(events) - DEADLINES_SHOWN} more</span>")
+        self.deadlines_list.setText("<br>".join(rows))
+
     def show_subject(self, subject: Subject | None) -> None:
         self.subject = subject
+        self._show_deadlines()
         has_subjects = bool(self.workspace.subjects())
         self.lectures.clear()
         if subject is None:
