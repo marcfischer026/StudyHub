@@ -103,6 +103,21 @@ class PdfViewerTests(unittest.TestCase):
         with pymupdf.open(self.path) as doc:
             self.assertEqual(len(list(doc[0].annots())), 0)  # snipping leaves the PDF alone
 
+    def test_unmark_by_click_and_by_box(self):
+        viewer = self.open_viewer()
+        viewer.highlighter.setChecked(True)
+        self.drag(viewer, (60, 95), (200, 95))  # mark line 1
+        self.drag(viewer, (60, 125), (150, 125))  # mark line 2
+        self.drag(viewer, (300, 200), (450, 300))  # mark an empty area
+        viewer.eraser.setChecked(True)
+        self.assertFalse(viewer.highlighter.isChecked())  # one tool at a time
+        self.drag(viewer, (70, 95), (70, 95))  # click on the first mark
+        with pymupdf.open(self.path) as doc:
+            self.assertEqual(len(list(doc[0].annots())), 2)
+        self.drag(viewer, (40, 110), (460, 320))  # box over the rest
+        with pymupdf.open(self.path) as doc:
+            self.assertEqual(len(list(doc[0].annots())), 0)
+
     def test_selection_on_rotated_page(self):
         viewer = self.open_viewer(rotation=90)
         self.drag(viewer, (60, 95), (200, 95))

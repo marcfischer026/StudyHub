@@ -211,14 +211,21 @@ class PdfViewer(QWidget):
         self.highlighter.setMenu(colors)
         self.highlighter.setIcon(self._swatch(self.highlight_color))
         self.highlighter.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.highlighter.toggled.connect(lambda _on: self.clear_selection())
         self.snipper = QToolButton(text="✂ Snip", checkable=True)
         self.snipper.setToolTip(
             "Snip: drag a box around a chart, table or diagram to put it into your notes.\n"
             "Text and tables inside it go along, so Claude can read them in the export."
         )
-        self.highlighter.toggled.connect(lambda on: on and self.snipper.setChecked(False))
-        self.snipper.toggled.connect(lambda on: (on and self.highlighter.setChecked(False), self.clear_selection()))
+        self.eraser = QToolButton(text="⌫ Unmark", checkable=True)
+        self.eraser.setToolTip("Unmark: click a highlight to remove it, or drag a box to remove every highlight it touches.")
+        tools = (self.snipper, self.highlighter, self.eraser)  # at most one is on
+        for tool in tools:
+            tool.toggled.connect(
+                lambda on, tool=tool: (
+                    [other.setChecked(False) for other in tools if on and other is not tool],
+                    self.clear_selection(),
+                )
+            )
 
         top = QHBoxLayout()
         top.addWidget(self.files, 1)
@@ -229,6 +236,7 @@ class PdfViewer(QWidget):
         nav.addStretch()
         nav.addWidget(self.snipper)
         nav.addWidget(self.highlighter)
+        nav.addWidget(self.eraser)
         for w in (zoom_out, zoom_in, fit):
             nav.addWidget(w)
 
@@ -522,7 +530,8 @@ class PdfViewer(QWidget):
         self.clear_selection()
         self._sel_page = index
         self._drag_start = self._to_pdf(index, pos)
-        self._drag_word = None if self.snipper.isChecked() else self._word_at(index, self._drag_start)
+        area_tool = self.snipper.isChecked() or self.eraser.isChecked()
+        self._drag_word = None if area_tool else self._word_at(index, self._drag_start)
 
     def _continue_drag(self, index: int, pos: QPointF) -> None:
         if self._drag_start is None or index != self._sel_page:
@@ -543,11 +552,18 @@ class PdfViewer(QWidget):
     def _end_drag(self, index: int) -> None:
         if self._drag_start is None:
             return
-        self._drag_start = None
+        start, self._drag_start = self._drag_start, None
         if self.highlighter.isChecked() and index == self._sel_page:
             self.highlight_selection()
         elif self.snipper.isChecked() and index == self._sel_page:
             self.clip_selection()
+        elif self.eraser.isChecked() and index == self._sel_page:
+            area = self._sel_area
+            self.clear_selection()
+            if area is None or area.width < 4 or area.height < 4:  # a click: the highlight under it
+                self._remove_highlight(index, start)
+            else:
+                self.remove_highlights(index, area)
 
     def _select_line_at(self, index: int, pos: QPointF) -> None:
         """Double-click: select the whole text line under the cursor."""
@@ -576,7 +592,8 @@ class PdfViewer(QWidget):
     def _selection_rects(self, index: int) -> list[QRect]:
         if index != self._sel_page or self.doc is None:
             return []
-        if self._sel_area is not None and (not self._sel_words or self.highlighter.isChecked() or self.snipper.isChecked()):
+        area_tool = self.highlighter.isChecked() or self.snipper.isChecked() or self.eraser.isChecked()
+        if self._sel_area is not None and (not self._sel_words or area_tool):
             return [self._to_widget(index, self._sel_area)]
         return [self._to_widget(index, r) for r in line_rects(self._sel_words)]
 
@@ -584,7 +601,10 @@ class PdfViewer(QWidget):
         if self.doc is None:
             return
         on_text = self._word_at(label.index, self._to_pdf(label.index, pos)) is not None
-        if self.snipper.isChecked():
+        if self.eraser.isChecked():
+            over = self._highlight_at(self.doc[label.index], self._to_pdf(label.index, pos)) is not None
+            label.setCursor(Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.CrossCursor)
+        elif self.snipper.isChecked():
             label.setCursor(Qt.CursorShape.CrossCursor)
         elif on_text:
             label.setCursor(Qt.CursorShape.IBeamCursor)
@@ -661,6 +681,27 @@ class PdfViewer(QWidget):
             page.delete_annot(annot)
             self._save_and_refresh(index)
 
+    def remove_highlights(self, index: int, area: pymupdf.Rect) -> int:
+        """Remove every highlight touching ``area`` on page ``index``. Returns how many."""
+        page = self.doc[index]
+        doomed = [annot for annot in page.annots(types=MARK_TYPES) if annot.rect.intersects(area)]
+        for annot in doomed:
+            page.delete_annot(annot)
+        if doomed:
+            self._save_and_refresh(index)
+        return len(doomed)
+
+    def _selection_area(self) -> pymupdf.Rect | None:
+        if self._sel_area is not None:
+            return self._sel_area
+        rects = line_rects(self._sel_words)
+        if not rects:
+            return None
+        area = rects[0]
+        for rect in rects[1:]:
+            area |= rect
+        return area
+
     def _save_and_refresh(self, index: int) -> None:
         try:
             if self.doc.can_save_incrementally():
@@ -690,6 +731,12 @@ class PdfViewer(QWidget):
         mark.setEnabled(bool(has_selection))
         if self._highlight_at(self.doc[index], point) is not None:
             menu.addAction("Remove highlight", lambda: self._remove_highlight(index, point))
+        selected = self._selection_area() if index == self._sel_page else None
+        if selected is not None and any(a.rect.intersects(selected) for a in self.doc[index].annots(types=MARK_TYPES)):
+            menu.addAction(
+                "Remove highlights in selection",
+                lambda: (self.clear_selection(), self.remove_highlights(index, selected)),
+            )
         menu.addSeparator()
         snip = menu.addAction("✂ Add selected area to notes", self.clip_selection)
         snip.setEnabled(index == self._sel_page and self._sel_area is not None)
