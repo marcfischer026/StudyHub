@@ -27,7 +27,7 @@ from ..config import Settings
 from ..professors import ProfessorStore
 from ..services import local_llm, moodle_ical, relevance, transcriber
 from ..services.vector_index import SubjectIndex, get_embedder
-from ..storage import Lecture, Subject, Workspace
+from ..storage import Lecture, Subject, Workspace, clock_time
 from . import workers
 from .ai_panel import AIPanel, hit_target
 from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, open_mic_privacy_settings
@@ -69,7 +69,9 @@ class MainWindow(QMainWindow):
 
         # centre: welcome page or the open lecture (header, notes, player)
         self.audio = AudioController(settings, self)
-        self.notes = NoteEditor(time_source=self.audio.time_source, context_source=lambda: self._note_context())
+        self.notes = NoteEditor(
+            time_source=self.audio.time_source, context_source=lambda: self._note_context(), clock_source=self.audio.clock
+        )
         self.player_bar = PlayerBar(self.audio)
         self.lecture_view = LectureView(self.notes, self.player_bar, self.professors)
         self.welcome = WelcomePage(self.workspace)
@@ -440,7 +442,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Delete recording", "Stop the recording before deleting it.")
             return
         names = "\n".join(f"• {p.stem}" for p in paths)
-        transcribed = sum(len(lecture.audio_bundle(p)) > 1 for p in paths)
+        transcribed = sum((lecture.dir("transcripts") / f"{p.stem}.json").exists() for p in paths)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("Delete recording")
@@ -533,7 +535,7 @@ class MainWindow(QMainWindow):
         context = {}
         position = self.audio.audio_position()
         if position is not None:
-            context.update(audio=position[0].stem, t=round(position[1], 1))
+            context.update(audio=position[0].stem, t=round(position[1], 1), clock=f"{clock_time(*position):%H:%M}")
         visible = [k for k, v in self.viewers.items() if v.current() and v.isVisible() and not v.visibleRegion().isEmpty()]
         if visible:
             kind = self._last_viewer if self._last_viewer in visible else visible[0]

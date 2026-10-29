@@ -4,10 +4,14 @@ Click a line to hear it. Exam-relevant lines are highlighted (★), questions an
 answers marked, private talk greyed out, other voices than the lecturer's tagged
 (👥) — and right-click corrects any label or speaker. With several recordings in
 a lecture, "All recordings" shows them as one transcript in recording order.
+
+Lines show the time of day they were said. Pauses and the time between
+recordings show up as their own rows, so gaps in the recording are visible.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -27,9 +31,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..services import relevance, speakers
-from ..services.timestamps import make_stamp
+from ..services.audio_player import duration
+from ..services.timestamps import format_seconds
 from ..services.transcriber import Transcript
-from ..storage import Lecture
+from ..storage import Lecture, clock_time, pauses, read_timeline, recording_time
 
 ROLE = Qt.ItemDataRole.UserRole
 EXAM_BG = QColor(255, 196, 0, 70)  # translucent so it works in light and dark mode
@@ -38,6 +43,7 @@ ICONS = {"question": "❓ ", "answer": "💬 ", "off_topic": "🔇 "}
 SOURCE_NAMES = {"rules": "exam cue", "local": "local AI", "claude": "Claude", "manual": "you"}
 
 ALL_RECORDINGS = "All recordings (in order)"
+MIN_GAP_S = 60  # shorter breaks between recordings are not worth a row
 
 FILTERS = (
     "All",
@@ -59,6 +65,7 @@ class TranscriptPanel(QWidget):
         super().__init__(parent)
         self.lecture: Lecture | None = None
         self.parts: list[tuple[Path, Transcript]] = []  # what is shown: one transcript, or all in order
+        self.timelines: list[list[tuple[float, datetime]]] = []  # per part, see storage.read_timeline
         self.path: Path | None = None  # the single transcript shown; None for "All recordings"
 
         self.files = QComboBox()
@@ -145,16 +152,33 @@ class TranscriptPanel(QWidget):
             self.path = Path(data) if data else None
             paths = [self.path] if self.path else []
         self.parts = [(path, Transcript.load(path)) for path in paths]
+        audio = {p.stem: p for p in self.lecture.audio_files()} if self.lecture else {}
+        self.timelines = []
+        for path, transcript in self.parts:
+            source = audio.get(Path(transcript.audio).stem)
+            self.timelines.append(read_timeline(source) if source else [(0.0, recording_time(path))])
         self.classify_btn.setEnabled(bool(self.parts) and self.progress.isHidden())
         if not self.parts:
             self.list.addItem("No transcript yet. Record or import audio, then press Transcribe.")
             self.summary.clear()
             return
+        previous_end: datetime | None = None
         for part, (path, transcript) in enumerate(self.parts):
             stem = Path(transcript.audio).stem
+            timeline = self.timelines[part]
+            source = audio.get(stem)
+            length = (duration(source) if source else 0.0) or (transcript.segments[-1].end if transcript.segments else 0.0)
+            start, end = timeline[0][1], clock_time(path, length, timeline)
+            if previous_end is not None and (start - previous_end).total_seconds() >= MIN_GAP_S:
+                self.list.addItem(self._gap(previous_end, start, "not recorded"))
             if len(self.parts) > 1:
-                self.list.addItem(self._heading(path.stem, part))
+                self.list.addItem(self._heading(path.stem, part, start, end))
+            previous_end = max(end, previous_end or end)
+            breaks = pauses(timeline)
             for index, seg in enumerate(transcript.segments):
+                while breaks and seg.start >= breaks[0][0]:
+                    _offset, paused_at, resumed_at = breaks.pop(0)
+                    self.list.addItem(self._gap(paused_at, resumed_at, "paused"))
                 item = QListWidgetItem()
                 item.setData(ROLE, (stem, seg.start, index, part))
                 self._style_item(item)
@@ -163,12 +187,23 @@ class TranscriptPanel(QWidget):
         self._update_summary()
         self.list.verticalScrollBar().setValue(scroll)
 
-    def _heading(self, name: str, part: int) -> QListWidgetItem:
-        """Divider between recordings in the "All recordings" view."""
-        item = QListWidgetItem(f"🎙  {part + 1}. {name}")
+    def _heading(self, name: str, part: int, start: datetime, end: datetime) -> QListWidgetItem:
+        """Divider between recordings in the "All recordings" view: when each ran and for how long."""
+        minutes = round((end - start).total_seconds() / 60)
+        item = self._info(f"🎙  {part + 1}. {name}  ·  {start:%a %d.%m.  %H:%M}–{end:%H:%M}  ·  {minutes} min")
         font = QFont(item.font())
         font.setBold(True)
         item.setFont(font)
+        return item
+
+    def _gap(self, start: datetime, end: datetime, what: str) -> QListWidgetItem:
+        """A stretch of time with no audio: a pause, or the time between two recordings."""
+        minutes = max(1, round((end - start).total_seconds() / 60))
+        span = f"{start:%H:%M}–{end:%H:%M}" if start.date() == end.date() else f"{start:%d.%m. %H:%M}–{end:%d.%m. %H:%M}"
+        return self._info(f"⏸  {span}  ·  {minutes} min {what}")
+
+    def _info(self, text: str) -> QListWidgetItem:
+        item = QListWidgetItem(text)
         item.setFlags(Qt.ItemFlag.NoItemFlags)  # not selectable; carries no segment
         item.setForeground(QBrush(self.list.palette().color(self.list.palette().ColorRole.PlaceholderText)))
         return item
@@ -190,7 +225,9 @@ class TranscriptPanel(QWidget):
         seg = self._segment(item)
         star = "★ " if seg.exam else ""
         voice = "" if not seg.speaker else "🎓 " if seg.speaker == speakers.LECTURER else f"👥 {speakers.speaker_name(seg.speaker)}: "
-        item.setText(f"{star}{ICONS.get(seg.category, '')}{make_stamp(seg.start)}  {voice}{seg.text}")
+        part = item.data(ROLE)[3]
+        clock = clock_time(self.parts[part][0], seg.start, self.timelines[part])
+        item.setText(f"{star}{ICONS.get(seg.category, '')}{clock:%H:%M:%S}  {voice}{seg.text}")
         font = QFont(item.font())
         font.setItalic(seg.private)
         font.setBold(seg.exam)
@@ -210,7 +247,12 @@ class TranscriptPanel(QWidget):
         voice = [speakers.speaker_name(seg.speaker)] if seg.speaker else []
         if seg.loudness is not None:
             voice.append(f"{seg.loudness:.0f} dB")
-        item.setToolTip(" · ".join(details) + ("\nVoice: " + " · ".join(voice) if voice else "") + "\nRight-click to change.")
+        item.setToolTip(
+            f"{clock:%H:%M:%S} · minute {format_seconds(seg.start)} of the recording\n"
+            + " · ".join(details)
+            + ("\nVoice: " + " · ".join(voice) if voice else "")
+            + "\nRight-click to change."
+        )
 
     def _apply_filter(self) -> None:
         if not self.parts:

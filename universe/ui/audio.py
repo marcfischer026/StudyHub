@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QObject, Qt, QTimer, Signal
@@ -40,7 +41,7 @@ from ..services.audio_recorder import AudioRecorder
 from ..services import live_check
 from ..services.live_check import LiveMonitor, LiveStatus
 from ..services.timestamps import format_seconds
-from ..storage import Lecture
+from ..storage import Lecture, clock_time, write_timeline
 
 MIC_PRIVACY_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 SILENCE_AFTER_S = 4.0
@@ -68,6 +69,7 @@ class AudioController(QObject):
         self.player = AudioPlayer()
         self.lecture: Lecture | None = None
         self.recording_lecture: Lecture | None = None
+        self._timeline: list = []  # (offset, clock time) of the running recording, see storage.read_timeline
         self.live: LiveMonitor | None = None
         self._silence_warned = False
 
@@ -150,6 +152,8 @@ class AudioController(QObject):
             self.error.emit(f"Could not start recording: {exc}")
             return False
         self.recording_lecture = lecture
+        self._timeline = [(0.0, datetime.now())]
+        write_timeline(path, self._timeline)
         self._silence_warned = False
         language = lecture.subject.meta.get("language") or self.settings.whisper_language
         self.live = LiveMonitor(self.settings, language=language)
@@ -179,6 +183,9 @@ class AudioController(QObject):
     def toggle_pause(self) -> None:
         if self.recorder.paused:
             self.recorder.resume()
+            if self.recorder.path is not None:
+                self._timeline.append((self.recorder.elapsed(), datetime.now()))
+                write_timeline(self.recorder.path, self._timeline)
         else:
             self.recorder.pause()
 
@@ -190,6 +197,11 @@ class AudioController(QObject):
         """Position for note timestamps: live recording of this lecture first, then playback."""
         position = self.audio_position()
         return position[1] if position else None
+
+    def clock(self) -> datetime | None:
+        """Time of day at the current recording/playback position."""
+        position = self.audio_position()
+        return clock_time(*position) if position else None
 
     def audio_position(self) -> tuple[Path, float] | None:
         """The audio file ``time_source`` refers to, with the position in it."""

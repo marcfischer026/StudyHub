@@ -11,7 +11,8 @@ Layout::
             lecture.json
             notes.md                 Markdown notes with [▶ HH:MM:SS] stamps
             notes.anchors.json       hidden per-paragraph context: audio time, open PDF page
-            audio/                   recordings ("BWL 2026-10-28 15.30.wav") and imported audio
+            audio/                   recordings ("BWL 2026-10-28 15.30.wav") and imported audio,
+                                     plus "<recording>.timeline.json": clock time at start and after each pause
             slides/                  PDFs
             transcripts/             whisper.cpp output (*.json, *.txt)
             ai/                      Context.md exports and imported AI responses
@@ -23,7 +24,7 @@ import json
 import re
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import config
@@ -104,6 +105,42 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def timeline_path(audio: Path) -> Path:
+    return audio.with_name(f"{audio.stem}.timeline.json")
+
+
+def write_timeline(audio: Path, points: list[tuple[float, datetime]]) -> None:
+    _write_json(timeline_path(audio), {"points": [{"offset": round(o, 2), "at": at.isoformat()} for o, at in points]})
+
+
+def read_timeline(audio: Path) -> list[tuple[float, datetime]]:
+    """``(seconds into the file, clock time)`` at the start and at each resume after a
+    pause — pauses are not in the audio. Without a saved timeline (older or imported
+    recordings) the start comes from the name, and pauses are unknown."""
+    try:
+        points = [(float(p["offset"]), datetime.fromisoformat(p["at"])) for p in _read_json(timeline_path(audio)).get("points", [])]
+    except (KeyError, TypeError, ValueError):
+        points = []
+    return sorted(points) or [(0.0, recording_time(audio))]
+
+
+def clock_time(audio: Path, offset: float, timeline: list[tuple[float, datetime]] | None = None) -> datetime:
+    """The time of day at ``offset`` seconds into a recording."""
+    points = timeline or read_timeline(audio)
+    base_offset, base_at = max((p for p in points if p[0] <= offset), default=points[0], key=lambda p: p[0])
+    return base_at + timedelta(seconds=offset - base_offset)
+
+
+def pauses(timeline: list[tuple[float, datetime]]) -> list[tuple[float, datetime, datetime]]:
+    """``(offset, paused at, resumed at)`` for each pause in a recording."""
+    found = []
+    for (o1, at1), (o2, at2) in zip(timeline, timeline[1:]):
+        paused_at = at1 + timedelta(seconds=o2 - o1)
+        if at2 > paused_at:
+            found.append((o2, paused_at, at2))
+    return found
+
+
 @dataclass(frozen=True)
 class Lecture:
     subject: "Subject"
@@ -175,6 +212,8 @@ class Lecture:
         if target.exists():
             raise FileExistsError(f"{target.name} already exists.")
         audio.rename(target)
+        if timeline_path(audio).exists():
+            timeline_path(audio).rename(timeline_path(target))
         transcripts = self.dir("transcripts")
         txt = transcripts / f"{audio.stem}.txt"
         if txt.exists():
@@ -190,7 +229,7 @@ class Lecture:
     def audio_bundle(self, audio: Path) -> list[Path]:
         """The recording and the transcript files made from it — what deleting it removes."""
         transcripts = self.dir("transcripts")
-        extra = [transcripts / f"{audio.stem}{suffix}" for suffix in (".json", ".txt")]
+        extra = [transcripts / f"{audio.stem}{suffix}" for suffix in (".json", ".txt")] + [timeline_path(audio)]
         return [audio, *(p for p in extra if p.exists())]
 
     def move_audio(self, audio: Path, target: "Lecture") -> Path:
@@ -210,6 +249,8 @@ class Lecture:
             stem = _free_stem(target.dir("audio"), audio.stem, audio.suffix)
         new_audio = target.dir("audio") / f"{stem}{audio.suffix}"
         shutil.move(str(audio), str(new_audio))
+        if timeline_path(audio).exists():
+            shutil.move(str(timeline_path(audio)), str(timeline_path(new_audio)))
         source, dest = self.dir("transcripts"), target.dir("transcripts")
         txt = source / f"{audio.stem}.txt"
         if txt.exists():

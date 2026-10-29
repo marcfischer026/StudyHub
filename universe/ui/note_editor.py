@@ -8,6 +8,7 @@ right-click it) to get back to both. Anchors live in ``notes.anchors.json``.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Callable
 
 from PySide6.QtCore import QRegularExpression, Qt, QTimer, Signal
@@ -64,7 +65,10 @@ def anchor_of(block) -> dict | None:
 
 def describe(context: dict) -> tuple[str | None, str | None]:
     """Menu texts for the audio and the PDF part of an anchor."""
-    audio = f"▶  Play recording from {timestamps.format_seconds(context['t'])}" if "t" in context else None
+    audio = None
+    if "t" in context:
+        clock = f"{context['clock']} (minute {timestamps.format_seconds(context['t'])})" if context.get("clock") else timestamps.format_seconds(context["t"])
+        audio = f"▶  Play recording from {clock}"
     pdf = None
     if "pdf" in context:
         pdf = f"Open {DOC_NAMES.get(context.get('doc'), 'PDF')}: {context['pdf']}, page {context.get('page', 1)}"
@@ -100,7 +104,11 @@ class NoteEditor(QWidget):
     saved = Signal()
 
     def __init__(
-        self, time_source: Callable[[], float | None], context_source: Callable[[], dict] = dict, parent=None
+        self,
+        time_source: Callable[[], float | None],
+        context_source: Callable[[], dict] = dict,
+        clock_source: Callable[[], datetime | None] = lambda: None,
+        parent=None,
     ):
         """``time_source`` returns the current recording/playback position in
         seconds, or ``None`` when nothing is recording or loaded.
@@ -110,6 +118,7 @@ class NoteEditor(QWidget):
         self.lecture: Lecture | None = None
         self.time_source = time_source
         self.context_source = context_source
+        self.clock_source = clock_source  # time of day at the recording/playback position
         self.dirty = False
         self._loading = False
 
@@ -296,7 +305,7 @@ class NoteEditor(QWidget):
             block_fmt = cursor.blockFormat()
             block_fmt.setHeadingLevel(0)
             cursor.insertBlock(block_fmt, QTextCharFormat())
-        cursor.insertText(timestamps.make_stamp(seconds) + " ", QTextCharFormat())
+        cursor.insertText(timestamps.make_stamp(seconds, self.clock_source()) + " ", QTextCharFormat())
         self.edit.setTextCursor(cursor)
         self.edit.setFocus()
 

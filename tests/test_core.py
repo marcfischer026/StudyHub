@@ -22,7 +22,7 @@ from universe.professors import ProfessorProfile, ProfessorStore  # noqa: E402
 from universe.services import audio_player, claude_bridge, timestamps  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
 from universe.services.vector_index import HashingEmbedder, SubjectIndex  # noqa: E402
-from universe.storage import Workspace, safe_name  # noqa: E402
+from universe.storage import Workspace, clock_time, pauses, read_timeline, safe_name, write_timeline  # noqa: E402
 
 VALID_REPLY = {
     "summary": "NPV and IRR.",
@@ -178,6 +178,35 @@ class TimestampTests(unittest.TestCase):
         line = "see [▶ 00:01:05] here"
         self.assertEqual(timestamps.stamp_at(line, 6), 65)
         self.assertIsNone(timestamps.stamp_at(line, 0))
+
+    def test_stamp_with_time_of_day(self):
+        from datetime import datetime
+
+        stamp = timestamps.make_stamp(903, datetime(2026, 10, 29, 12, 15))
+        self.assertEqual(stamp, "[▶ 00:15:03 · 12:15]")
+        self.assertEqual(timestamps.stamp_at(f"x {stamp}", 4), 903)
+        self.assertEqual(timestamps.normalize(f"\\{stamp[:-1]}\\]"), stamp)  # Qt's escaping goes, the clock stays
+
+
+class TimelineTests(unittest.TestCase):
+    def test_clock_time_skips_pauses(self):
+        from datetime import datetime, timedelta
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "BWL 2026-10-29 12.00.wav"
+            start = datetime(2026, 10, 29, 12, 0, 5)
+            # 10 min recorded, paused 5 min, then recording went on
+            write_timeline(audio, [(0.0, start), (600.0, start + timedelta(minutes=15))])
+            timeline = read_timeline(audio)
+            self.assertEqual(clock_time(audio, 300), start + timedelta(minutes=5))
+            self.assertEqual(clock_time(audio, 660), start + timedelta(minutes=16))
+            self.assertEqual(pauses(timeline), [(600.0, start + timedelta(minutes=10), start + timedelta(minutes=15))])
+
+    def test_without_timeline_the_name_gives_the_start(self):
+        from datetime import datetime
+
+        audio = Path("/nowhere/BWL 2026-10-29 12.00.wav")
+        self.assertEqual(clock_time(audio, 15 * 60), datetime(2026, 10, 29, 12, 15))
 
     def test_normalize_qt_escaping(self):
         self.assertEqual(timestamps.normalize(r"\[▶ 00:00:07\] x"), "[▶ 00:00:07] x")

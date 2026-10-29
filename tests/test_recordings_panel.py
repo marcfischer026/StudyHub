@@ -120,12 +120,15 @@ class AllRecordingsViewTests(unittest.TestCase):
         texts = [self.panel.list.item(i).text() for i in range(self.panel.list.count())]
         self.assertIn("1. BWL 2026-10-28 15.30", texts[0])
         self.assertTrue(texts[1].endswith("first part"))
-        self.assertIn("2. BWL 2026-10-28 15.44", texts[3])
-        self.assertTrue(texts[4].endswith("after the break"))
-        self.assertEqual(self.panel.list.item(4).data(Qt.ItemDataRole.UserRole)[0], "BWL 2026-10-28 15.44")  # plays the right file
+        self.assertIn("15:30–15:44", texts[3])  # the time between the recordings gets its own row
+        self.assertIn("not recorded", texts[3])
+        self.assertIn("2. BWL 2026-10-28 15.44", texts[4])
+        self.assertTrue(texts[5].endswith("after the break"))
+        self.assertTrue(texts[5].startswith("15:44:"))  # time of day, not minutes into the recording
+        self.assertEqual(self.panel.list.item(5).data(Qt.ItemDataRole.UserRole)[0], "BWL 2026-10-28 15.44")  # plays the right file
 
     def test_label_saves_into_the_recording_it_belongs_to(self):
-        self.panel._set([self.panel.list.item(5)], exam=True)
+        self.panel._set([self.panel.list.item(6)], exam=True)
         later = Transcript.load(self.lecture.dir("transcripts") / "BWL 2026-10-28 15.44.json")
         first = Transcript.load(self.lecture.dir("transcripts") / "BWL 2026-10-28 15.30.json")
         self.assertEqual([s.exam for s in later.segments], [False, True])
