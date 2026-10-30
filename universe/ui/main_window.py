@@ -91,6 +91,7 @@ class MainWindow(QMainWindow):
         for kind, viewer in self.viewers.items():
             viewer.interacted.connect(lambda kind=kind: setattr(self, "_last_viewer", kind))
             viewer.figureClipped.connect(lambda data, kind=kind: self._add_figure(kind, data))
+            viewer.linkRequested.connect(lambda target, kind=kind: self._link_page(kind, target))
         self.transcript = TranscriptPanel()
         self.ai = AIPanel(self.professors)
         self.recordings = RecordingsPanel(
@@ -557,6 +558,11 @@ class MainWindow(QMainWindow):
         self.notes.insert_figure(png, caption, data["tables"])
         found = f" with {len(data['tables'])} table(s) as text" if data["tables"] else ""
         self.statusBar().showMessage(f"Added figure from {caption} to your notes{found}.", 6000)
+
+    def _link_page(self, kind: str, target: dict) -> None:
+        if self.ensure_lecture(Path(target["pdf"]).stem) is not None:
+            self.notes_action.setChecked(True)
+            self.notes.insert_slide_link({"doc": kind, **target})
 
     def _jump_to_anchor(self, context: dict) -> None:
         if "t" in context:

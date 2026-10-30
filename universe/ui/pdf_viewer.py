@@ -141,6 +141,7 @@ class PdfViewer(QWidget):
     pdfImported = Signal(object)  # Path
     interacted = Signal()  # the user scrolled, clicked or switched files here
     figureClipped = Signal(dict)  # {"png": bytes, "pdf", "page", "text", "tables"}
+    linkRequested = Signal(dict)  # {"pdf", "page"}: put a link to this page into the notes
 
     def __init__(self, ensure_folder: Callable[[str], Path | None], noun: str = "slides", parent=None):
         """Shows the PDFs in one folder. ``ensure_folder(name_hint)`` returns the
@@ -741,6 +742,10 @@ class PdfViewer(QWidget):
         snip = menu.addAction("✂ Add selected area to notes", self.clip_selection)
         snip.setEnabled(index == self._sel_page and self._sel_area is not None)
         menu.addAction("✂ Add whole slide to notes", lambda: self.clip_selection(index, self.doc[index].rect))
+        menu.addAction(
+            "→ Link this slide in notes",
+            lambda: self.linkRequested.emit({"pdf": self.files.currentText(), "page": index + 1}),
+        )
         menu.addSeparator()
         page_text = self.doc[index].get_text("text").strip()
         slide_copy = menu.addAction("Copy slide text", lambda: QApplication.clipboard().setText(page_text))

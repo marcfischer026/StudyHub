@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import universe  # noqa: E402,F401
+from universe.services import claude_bridge, slide_links  # noqa: E402
+from universe.storage import Workspace  # noqa: E402
 from universe.ui.note_editor import NoteEditor  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
@@ -124,6 +127,52 @@ class NoteEditorTypingTests(unittest.TestCase):
         self.notes._hide_find()
         self.assertFalse(self.notes.find_bar.isVisible())
         self.assertEqual(self.edit.extraSelections(), [])
+
+
+class SlideLinkTests(unittest.TestCase):
+    TARGET = {"doc": "slides", "pdf": "VL 1 (neu).pdf", "page": 12}
+
+    def setUp(self):
+        self.lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance").create_lecture("Week 1")
+        self.lecture.write_notes("")
+        self.notes = NoteEditor(time_source=lambda: None, context_source=lambda: dict(self.TARGET))
+        self.notes.set_lecture(self.lecture)
+        self.notes.resize(600, 400)
+        self.notes.show()
+        self.edit = self.notes.edit
+
+    def test_href_round_trip_with_odd_file_name(self):
+        self.assertEqual(slide_links.parse_href(slide_links.make_href(self.TARGET)), self.TARGET)
+        self.assertIsNone(slide_links.parse_href("https://example.com"))
+
+    def test_link_survives_saving_and_click_opens_the_page(self):
+        self.notes.insert_slide_link()
+        QTest.keyClicks(self.edit, "danach")
+        self.notes.save()
+        self.notes.set_lecture(None)
+        self.notes.set_lecture(self.lecture)
+        self.assertEqual(self.edit.toPlainText(), "→ VL 1 (neu), slide 12 danach")
+        opened = []
+        self.notes.anchorActivated.connect(opened.append)
+        cursor = QTextCursor(self.edit.document())
+        cursor.setPosition(3)
+        rect = self.edit.cursorRect(cursor)
+        QTest.mouseClick(self.edit.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        self.assertEqual(opened, [self.TARGET])
+
+    def test_text_after_a_link_is_not_part_of_it(self):
+        self.notes.insert_slide_link()
+        QTest.keyClicks(self.edit, "x")
+        self.assertTrue(self.edit.toMarkdown().strip().endswith(") x"))
+
+    def test_export_names_the_pdf_and_keeps_the_line_tag(self):
+        self.notes.insert_slide_link()
+        QTest.keyClicks(self.edit, "wichtig")
+        self.notes.save()
+        text = claude_bridge.build_context(self.lecture, None)
+        self.assertIn("(→ see VL 1 (neu).pdf slide 12) wichtig", text)
+        self.assertNotIn("](slide:", text)
+        self.assertIn("⟨VL 1 (neu).pdf slide 12⟩", text)
 
 
 if __name__ == "__main__":

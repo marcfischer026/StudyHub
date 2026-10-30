@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..professors import ProfessorProfile
 from ..storage import Lecture, Subject, clock_time, read_timeline
-from . import pdf_tools, relevance, speakers
+from . import pdf_tools, relevance, slide_links, speakers
 from .timestamps import make_stamp
 from .transcriber import Transcript
 
@@ -145,6 +145,7 @@ MARKDOWN_MARKUP = re.compile(r"\\(?=[\\`*_{}\[\]()#+\-.!|>])|\*\*|__|[*_`]")
 
 def _plain(line: str) -> str:
     """A Markdown line as the editor shows it, for matching it with its anchor."""
+    line = slide_links.MARKDOWN_LINK_RE.sub(r"\1", line)
     return " ".join(MARKDOWN_MARKUP.sub("", MARKDOWN_PREFIX.sub("", line)).split())
 
 
@@ -188,7 +189,7 @@ def _tag_note_lines(lecture: Lecture, notes: str) -> str:
     lines = notes.splitlines()
     start = 0
     for anchor in anchors:
-        wanted = " ".join(anchor["text"].split())
+        wanted = " ".join(MARKDOWN_MARKUP.sub("", anchor["text"]).split())
         for i in range(start, len(lines)):
             line = lines[i]
             if line.lstrip().startswith("|") or FIGURE_RE.search(line):
@@ -217,6 +218,7 @@ def _notes_section(lecture: Lecture) -> str:
         return "\n".join(lines)
 
     notes = FIGURE_RE.sub(figure, _tag_note_lines(lecture, lecture.read_notes().strip()))
+    notes = slide_links.for_export(notes)
     return notes or "_No notes yet._"
 
 

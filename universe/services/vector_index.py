@@ -23,6 +23,7 @@ import pyarrow as pa
 
 from ..storage import Lecture, Subject
 from . import pdf_tools
+from . import slide_links
 from .timestamps import make_stamp
 from .transcriber import Transcript
 
@@ -132,7 +133,7 @@ def lecture_chunks(lecture: Lecture) -> list[Chunk]:
             for piece in _split(text):
                 chunks.append(Chunk(lecture.name, "slides", f"{pdf.name} p.{number}", piece))
 
-    for piece in _split(lecture.read_notes()):
+    for piece in _split(slide_links.for_export(lecture.read_notes())):
         chunks.append(Chunk(lecture.name, "notes", "notes", piece))
 
     return chunks

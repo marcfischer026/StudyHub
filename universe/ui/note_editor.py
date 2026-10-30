@@ -8,6 +8,7 @@ right-click it) to get back to both. Anchors live in ``notes.anchors.json``.
 Markdown typed at the start of a line becomes formatting right away (``# `` →
 heading, ``- `` → bullets, ``1. `` → numbered list, ``[ ] `` → checkbox), as do
 ``**bold**`` and ``*italic*``. Tab / ⇧Tab nest list items; ⌘F finds text.
+⌘L links the PDF page in view; clicking such a link opens that page again.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..services import timestamps
+from ..services import slide_links, timestamps
 from ..storage import Lecture
 
 
@@ -111,6 +112,7 @@ def describe(context: dict) -> tuple[str | None, str | None]:
 class _StampTextEdit(QTextEdit):
     stampClicked = Signal(int)
     blockClicked = Signal(object)  # QTextBlock, ⌘-clicked outside a stamp
+    slideLinkClicked = Signal(dict)  # {"doc", "pdf", "page"}
 
     def __init__(self):
         super().__init__()
@@ -143,15 +145,19 @@ class _StampTextEdit(QTextEdit):
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
         if event.button() == Qt.MouseButton.LeftButton and not self.textCursor().hasSelection():
+            target = slide_links.parse_href(self.anchorAt(event.position().toPoint()))
             seconds = self._stamp_under(event.position().toPoint())
-            if seconds is not None:
+            if target is not None:
+                self.slideLinkClicked.emit(target)
+            elif seconds is not None:
                 self.stampClicked.emit(seconds)
             elif event.modifiers() & Qt.KeyboardModifier.ControlModifier:  # ⌘ on macOS
                 self.blockClicked.emit(self.cursorForPosition(event.position().toPoint()).block())
 
     def mouseMoveEvent(self, event) -> None:
         super().mouseMoveEvent(event)
-        over = self._stamp_under(event.position().toPoint()) is not None
+        pos = event.position().toPoint()
+        over = self._stamp_under(pos) is not None or slide_links.parse_href(self.anchorAt(pos)) is not None
         self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.IBeamCursor)
 
 
@@ -197,6 +203,7 @@ class NoteEditor(QWidget):
         self.edit.textChanged.connect(self._on_changed)
         self.edit.stampClicked.connect(self.seekRequested)
         self.edit.blockClicked.connect(lambda block: self._activate(anchor_of(block)))
+        self.edit.slideLinkClicked.connect(self.anchorActivated)
         self.edit.document().contentsChange.connect(self._anchor_new_text)
         self.edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.edit.customContextMenuRequested.connect(self._context_menu)
@@ -215,6 +222,7 @@ class NoteEditor(QWidget):
         self._action(toolbar, "• List", "Bullet list (⇧⌘L, or type - )", "Ctrl+Shift+L", lambda: self._toggle_list(BULLET_STYLES))
         self._action(toolbar, "1. List", "Numbered list (⇧⌘O, or type 1. )", "Ctrl+Shift+O", lambda: self._toggle_list(NUMBERED))
         self._action(toolbar, "☐ To-do", "Checkbox (⇧⌘K, or type [ ] ) — click the box to tick it", "Ctrl+Shift+K", self._toggle_checkbox)
+        self._action(toolbar, "→ Slide", "Link the PDF page in view; click the link to open it again (⌘L)", "Ctrl+L", lambda: self.insert_slide_link())
         self._action(None, "Find", "Find in notes (⌘F)", QKeySequence.StandardKey.Find, self._show_find)
         toolbar.addSeparator()
         self._action(toolbar, "⏱ Timestamp", "Insert timestamp at the current recording/playback time (⌘T)", None, self.insert_timestamp)
@@ -322,6 +330,30 @@ class NoteEditor(QWidget):
         cursor.insertBlock(QTextBlockFormat(), QTextCharFormat())  # keep writing below, outside any table
         self.edit.setTextCursor(cursor)
         self._fit_images()
+        self.edit.setFocus()
+
+    def insert_slide_link(self, target: dict | None = None) -> None:
+        """Link ``target`` ({"doc", "pdf", "page"}), by default the PDF page in view, at the cursor."""
+        if self.lecture is None:
+            return
+        target = target or self.context_source()
+        if not target.get("pdf"):
+            self.status.setText("Open a slide first, then ⌘L links it.")
+            return
+        cursor = self.edit.textCursor()
+        plain = QTextCharFormat(cursor.charFormat())  # keeps a heading's size, but not a neighbouring link
+        plain.setAnchor(False)
+        plain.clearProperty(QTextCharFormat.Property.AnchorHref)
+        plain.clearForeground()
+        plain.setFontUnderline(False)
+        link = QTextCharFormat(plain)
+        link.setAnchor(True)
+        link.setAnchorHref(slide_links.make_href(target))
+        link.setForeground(self.edit.palette().link())
+        link.setFontUnderline(True)
+        cursor.insertText(slide_links.link_text(target), link)
+        cursor.insertText(" ", plain)
+        self.edit.setTextCursor(cursor)
         self.edit.setFocus()
 
     def _fit_images(self) -> None:
