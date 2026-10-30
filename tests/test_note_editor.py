@@ -116,6 +116,35 @@ class NoteEditorTypingTests(unittest.TestCase):
         self.key(Qt.Key.Key_Backspace)
         self.assertEqual(self.markdown(), "eins")
 
+    def test_toolbar_shows_the_format_at_the_cursor(self):
+        lit = lambda: {k for k, action in self.notes.format_actions.items() if action.isChecked()}  # noqa: E731
+        self.assertEqual(lit(), set())
+        self.notes.format_actions["bold"].trigger()
+        self.assertEqual(lit(), {"bold"})
+        self.type("fett")
+        self.notes.format_actions["bold"].trigger()
+        self.assertEqual(lit(), set())
+        self.type(" normal")
+        self.key(Qt.Key.Key_Home)
+        self.key(Qt.Key.Key_Right)
+        self.assertEqual(lit(), {"bold"})  # moving the cursor back into bold text
+        self.key(Qt.Key.Key_End)
+        self.assertEqual(lit(), set())
+        self.key(Qt.Key.Key_Return)
+        self.type("## Titel")
+        self.assertIn("h2", lit())
+        self.key(Qt.Key.Key_Return)
+        self.assertEqual(lit(), set())
+        self.type("[ ] box")
+        self.assertEqual(lit(), {"checkbox"})
+
+    def test_clicking_a_lit_button_again_turns_it_off(self):
+        self.notes.format_actions["numbered"].trigger()
+        self.assertTrue(self.notes.format_actions["numbered"].isChecked())
+        self.notes.format_actions["numbered"].trigger()
+        self.assertFalse(self.notes.format_actions["numbered"].isChecked())
+        self.assertIsNone(self.edit.textCursor().currentList())
+
     def test_find_counts_and_cycles(self):
         self.type("NPV hier, NPV da, npv dort")
         self.notes._show_find()

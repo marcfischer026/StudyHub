@@ -214,14 +214,16 @@ class NoteEditor(QWidget):
 
         toolbar = QToolBar()
         toolbar.setObjectName("formatBar")
-        self._action(toolbar, "B", "Bold (⌘B, or type **text**)", QKeySequence.StandardKey.Bold, self._toggle_bold)
-        self._action(toolbar, "I", "Italic (⌘I, or type *text*)", QKeySequence.StandardKey.Italic, self._toggle_italic)
+        # Lit up while the text at the cursor has that format (see _update_format_buttons).
+        self.format_actions: dict[str, QAction] = {}
+        self._format_action(toolbar, "bold", "B", "Bold (⌘B, or type **text**)", QKeySequence.StandardKey.Bold, self._toggle_bold)
+        self._format_action(toolbar, "italic", "I", "Italic (⌘I, or type *text*)", QKeySequence.StandardKey.Italic, self._toggle_italic)
         for level in (1, 2, 3):
-            self._action(toolbar, f"H{level}", f"Heading {level} (⌥⌘{level}, or type {'#' * level} )", f"Ctrl+Alt+{level}", lambda _=False, lv=level: self._heading(lv))
+            self._format_action(toolbar, f"h{level}", f"H{level}", f"Heading {level} (⌥⌘{level}, or type {'#' * level} )", f"Ctrl+Alt+{level}", lambda _=False, lv=level: self._heading(lv))
         self._action(None, "Normal text", "Normal text (⌥⌘0)", "Ctrl+Alt+0", lambda: self._heading(0))
-        self._action(toolbar, "• List", "Bullet list (⇧⌘L, or type - )", "Ctrl+Shift+L", lambda: self._toggle_list(BULLET_STYLES))
-        self._action(toolbar, "1. List", "Numbered list (⇧⌘O, or type 1. )", "Ctrl+Shift+O", lambda: self._toggle_list(NUMBERED))
-        self._action(toolbar, "☐ To-do", "Checkbox (⇧⌘K, or type [ ] ) — click the box to tick it", "Ctrl+Shift+K", self._toggle_checkbox)
+        self._format_action(toolbar, "bullets", "• List", "Bullet list (⇧⌘L, or type - )", "Ctrl+Shift+L", lambda: self._toggle_list(BULLET_STYLES))
+        self._format_action(toolbar, "numbered", "1. List", "Numbered list (⇧⌘O, or type 1. )", "Ctrl+Shift+O", lambda: self._toggle_list(NUMBERED))
+        self._format_action(toolbar, "checkbox", "☐ To-do", "Checkbox (⇧⌘K, or type [ ] ) — click the box to tick it", "Ctrl+Shift+K", lambda: self._toggle_checkbox())
         self._action(toolbar, "→ Slide", "Link the PDF page in view; click the link to open it again (⌘L)", "Ctrl+L", lambda: self.insert_slide_link())
         self._action(None, "Find", "Find in notes (⌘F)", QKeySequence.StandardKey.Find, self._show_find)
         toolbar.addSeparator()
@@ -234,6 +236,9 @@ class NoteEditor(QWidget):
         self.status.setMinimumWidth(70)
         self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         toolbar.addWidget(self.status)
+
+        self.edit.cursorPositionChanged.connect(self._update_format_buttons)
+        self.edit.currentCharFormatChanged.connect(lambda _fmt: self._update_format_buttons())
 
         self.find_field = QLineEdit(placeholderText="Find in notes…")
         self.find_field.setClearButtonEnabled(True)
@@ -278,6 +283,31 @@ class NoteEditor(QWidget):
         else:
             self.addAction(action)
         return action
+
+    def _format_action(self, toolbar: QToolBar, key: str, text: str, tip: str, shortcut, slot) -> None:
+        action = self._action(toolbar, text, tip, shortcut, slot)
+        action.setCheckable(True)
+        action.triggered.connect(self._update_format_buttons)  # the click toggled it; the text decides
+        self.format_actions[key] = action
+
+    def _update_format_buttons(self) -> None:
+        cursor = self.edit.textCursor()
+        heading = cursor.blockFormat().headingLevel()
+        checkbox = cursor.blockFormat().marker() != QTextBlockFormat.MarkerType.NoMarker
+        current = cursor.currentList()
+        style = current.format().style() if current else None
+        states = {
+            "bold": self.edit.fontWeight() >= QFont.Weight.Bold,
+            "italic": self.edit.fontItalic(),
+            "h1": heading == 1,
+            "h2": heading == 2,
+            "h3": heading == 3,
+            "bullets": style in BULLET_STYLES and not checkbox,
+            "numbered": style in NUMBERED,
+            "checkbox": checkbox,
+        }
+        for key, active in states.items():
+            self.format_actions[key].setChecked(active)
 
     # --- lecture binding ----------------------------------------------------
 

@@ -32,6 +32,7 @@ def stylesheet() -> str:
     QToolBar#formatBar {{ spacing: 2px; border: none; padding: 2px 0; }}
     QToolBar#formatBar QToolButton {{ padding: 3px 7px; border-radius: 5px; }}
     QToolBar#formatBar QToolButton:hover {{ background: {hover}; }}
+    QToolBar#formatBar QToolButton:checked {{ background: {ACCENT}; color: white; }}
 
     QDockWidget {{ font-weight: 600; }}
     QDockWidget::title {{ padding: 6px 8px; text-align: left; }}
