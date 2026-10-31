@@ -82,8 +82,9 @@ class AudioController(QObject):
     def set_lecture(self, lecture: Lecture | None) -> None:
         self.player.stop()
         self.lecture = lecture
-        files = self.files()
-        self._load(files[-1] if files else None)  # newest recording names sort last
+        # newest recording names sort last; the one still being written isn't playable yet
+        files = [p for p in self.files() if not (self.recording and p == self.recorder.path)]
+        self._load(files[-1] if files else None)
         self.filesChanged.emit()
 
     def files(self) -> list[Path]:

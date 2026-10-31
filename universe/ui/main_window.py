@@ -352,6 +352,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"UniVerse — {where}" if where else "UniVerse")
 
     def _open_subject(self, subject: Subject) -> None:
+        if self.audio.recording and self.lecture is not None:
+            # The overview page would take the notes away in the middle of a recording.
+            self.statusBar().showMessage("Still recording — your notes stay open. Pick a lecture to switch.", 6000)
+            return
         self.subject = subject
         self.open_lecture(None)
 
