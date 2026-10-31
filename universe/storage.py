@@ -5,19 +5,23 @@ Layout::
     ~/.universe_data/Subjects/<Subject>/
         subject.json
         .index/                      LanceDB vector store for the subject
-        exams/                       past exams (PDFs), shared by all lectures
-        exercises/                   exercise sheets (PDFs)
+        exams/                       PDFs imported as past exams, shared by all lectures
+        exercises/                   PDFs imported as tasks / exercise sheets, shared by all lectures
         Lectures/<Lecture>/
             lecture.json
             notes.md                 Markdown notes with [▶ HH:MM:SS] stamps
             notes.anchors.json       hidden per-paragraph context: audio time, open PDF page
             audio/                   recordings ("BWL 2026-10-28 15.30.wav") and imported audio,
                                      plus "<recording>.timeline.json": clock time at start and after each pause
-            slides/                  PDFs
+            slides/                  PDFs imported as slides
             transcripts/             whisper.cpp output (*.json, *.txt)
             ai/                      Context.md exports and imported AI responses
             figures/                 graphics clipped from PDFs into the notes (PNG + JSON with
                                      source, text and tables, which the Claude export uses)
+
+Every PDF folder may hold a ``tags.json``: {"file.pdf": ["Past exam", "Important"]}. A file
+without an entry has just the type tag of its folder, so older data needs no migration.
+Tag colours are in ``subject.json`` ("document_tags").
 """
 
 from __future__ import annotations
@@ -34,6 +38,20 @@ from . import config
 LECTURE_SUBDIRS = ("audio", "slides", "transcripts", "ai", "figures")
 SUBJECT_SUBDIRS = ("exams", "exercises")
 AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
+DOC_TYPES = {"slides": "Slides", "exams": "Past exam", "exercises": "Task"}  # PDF folder -> its type tag
+TAGS_FILE = "tags.json"
+TAG_PALETTE = {
+    "Red": "#e5484d",
+    "Orange": "#f76b15",
+    "Yellow": "#f5c518",
+    "Green": "#30a46c",
+    "Teal": "#12a594",
+    "Blue": "#3e7bfa",
+    "Purple": "#8e4ec6",
+    "Pink": "#e93d82",
+    "Grey": "#8b8d98",
+}
+TYPE_TAG_COLORS = {"Slides": TAG_PALETTE["Blue"], "Past exam": TAG_PALETTE["Red"], "Task": TAG_PALETTE["Orange"]}
 
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 # Names written by UniVerse before recordings were named "<abbr> <date> <time>".
@@ -144,6 +162,49 @@ def pauses(timeline: list[tuple[float, datetime]]) -> list[tuple[float, datetime
 
 
 @dataclass(frozen=True)
+class Document:
+    """A PDF of a lecture or subject. ``folder`` says where it is stored (and is what
+    note links name); what kind of document it is, is up to its tags."""
+
+    path: Path
+    folder: str  # a key of DOC_TYPES
+    lecture: str = ""  # the lecture it belongs to; empty: the whole subject
+
+    @property
+    def tags(self) -> list[str]:
+        saved = _read_json(self.path.parent / TAGS_FILE).get(self.path.name)
+        if isinstance(saved, list):
+            return [t for t in saved if isinstance(t, str)]
+        return [DOC_TYPES[self.folder]]
+
+    def set_tags(self, tags: list[str]) -> None:
+        sidecar = self.path.parent / TAGS_FILE
+        saved = _read_json(sidecar)
+        saved[self.path.name] = list(dict.fromkeys(tags))
+        _write_json(sidecar, saved)
+
+    @property
+    def types(self) -> list[str]:
+        return [t for t in DOC_TYPES.values() if t in self.tags]
+
+    @property
+    def type_label(self) -> str:
+        return " / ".join(self.types) or "Document"
+
+    @property
+    def unit(self) -> str:
+        return "slide" if DOC_TYPES["slides"] in self.types else "page"
+
+
+def _documents(folder: Path, kind: str, lecture: str = "") -> list[Document]:
+    return [Document(pdf, kind, lecture) for pdf in _pdfs(folder)]
+
+
+def _pdfs(folder: Path) -> list[Path]:
+    return sorted(p for p in folder.iterdir() if p.suffix.lower() == ".pdf" and p.is_file())
+
+
+@dataclass(frozen=True)
 class Lecture:
     subject: "Subject"
     path: Path
@@ -207,7 +268,10 @@ class Lecture:
         return _read_json(png.with_suffix(".json"))
 
     def pdfs(self) -> list[Path]:
-        return sorted(self.dir("slides").glob("*.pdf"))
+        return _pdfs(self.dir("slides"))
+
+    def documents(self) -> list[Document]:
+        return _documents(self.dir("slides"), "slides", self.name)
 
     def audio_files(self) -> list[Path]:
         """In the order they were recorded, so the newest recording is last."""
@@ -356,6 +420,25 @@ class Subject:
         path = self.path / kind
         path.mkdir(exist_ok=True)
         return path
+
+    def documents(self) -> list[Document]:
+        """The documents of the whole subject, not of one lecture."""
+        return [doc for kind in SUBJECT_SUBDIRS for doc in _documents(self.dir(kind), kind)]
+
+    def tag_colors(self) -> dict[str, str]:
+        """Every tag of this subject with its colour; the type tags are always there."""
+        saved = self.meta.get("document_tags")
+        return TYPE_TAG_COLORS | (saved if isinstance(saved, dict) else {})
+
+    def set_tag_color(self, tag: str, color: str) -> None:
+        self.update_meta(document_tags=self.meta.get("document_tags", {}) | {tag: color})
+
+    def delete_tag(self, tag: str) -> None:
+        """Take a tag off every document of the subject and forget it. Files stay."""
+        for doc in [d for lec in self.lectures() for d in lec.documents()] + self.documents():
+            if tag in doc.tags:
+                doc.set_tags([t for t in doc.tags if t != tag])
+        self.update_meta(document_tags={k: v for k, v in self.meta.get("document_tags", {}).items() if k != tag})
 
     @property
     def lectures_dir(self) -> Path:

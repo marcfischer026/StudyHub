@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..services import slide_links, timestamps
-from ..storage import Lecture
+from ..storage import DOC_TYPES, Lecture
 
 
 class _StampHighlighter(QSyntaxHighlighter):
@@ -66,7 +66,6 @@ class _StampHighlighter(QSyntaxHighlighter):
             self.setFormat(m.capturedStart(), m.capturedLength(), self.fmt)
 
 
-DOC_NAMES = {"slides": "Slides", "exams": "Past Exams", "exercises": "Exercises"}
 ANCHOR_SEARCH = 50  # paragraphs to look ahead when re-attaching saved anchors
 FIGURE_MAX_WIDTH = 560  # display width of clipped figures; the PNG itself stays full size
 BULLET_STYLES = (QTextListFormat.Style.ListDisc, QTextListFormat.Style.ListCircle, QTextListFormat.Style.ListSquare)
@@ -105,7 +104,7 @@ def describe(context: dict) -> tuple[str | None, str | None]:
         audio = f"▶  Play recording from {clock}"
     pdf = None
     if "pdf" in context:
-        pdf = f"Open {DOC_NAMES.get(context.get('doc'), 'PDF')}: {context['pdf']}, page {context.get('page', 1)}"
+        pdf = f"Open {context.get('type') or DOC_TYPES.get(context.get('doc'), 'PDF')}: {context['pdf']}, page {context.get('page', 1)}"
     return audio, pdf
 
 

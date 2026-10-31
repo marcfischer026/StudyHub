@@ -40,9 +40,9 @@ class PdfViewerTests(unittest.TestCase):
 
     def open_viewer(self, rotation: int = 0) -> PdfViewer:
         self.path = make_pdf(self.folder, rotation)
-        viewer = PdfViewer(lambda _hint: self.folder)
+        viewer = PdfViewer()
         viewer.resize(700, 600)
-        viewer.set_folder(self.folder)
+        viewer.open_file(self.path)
         viewer._set_zoom(1.0)
         return viewer
 

@@ -31,8 +31,8 @@ from ..storage import Lecture, Subject, Workspace, clock_time
 from . import workers
 from .ai_panel import AIPanel, hit_target
 from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, open_mic_privacy_settings
-from .note_editor import DOC_NAMES, NoteEditor
-from .pdf_viewer import PdfViewer
+from .documents_panel import DocumentsPanel
+from .note_editor import NoteEditor
 from .professor_dialog import AssignProfessorDialog, ProfessorManager
 from .settings_dialog import SettingsDialog
 from .sidebar import Sidebar
@@ -42,7 +42,7 @@ from .welcome import LectureView, WelcomePage
 from .workers import Worker
 
 # Bump when the default dock arrangement changes, so stale saved layouts are ignored.
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 
 class MainWindow(QMainWindow):
@@ -82,16 +82,9 @@ class MainWindow(QMainWindow):
 
         # docks
         self.sidebar = Sidebar(self.workspace)
-        self.pdf = PdfViewer(lambda hint: (lecture := self.ensure_lecture(hint)) and lecture.dir("slides"))
-        # Past exams and exercise sheets belong to the whole subject, not one lecture.
-        self.exams = PdfViewer(lambda _hint: self._subject_folder("exams"), noun="past exams")
-        self.exercises = PdfViewer(lambda _hint: self._subject_folder("exercises"), noun="exercises")
-        self.viewers = {"slides": self.pdf, "exams": self.exams, "exercises": self.exercises}
-        self._last_viewer = "slides"  # the one the user touched last, if several are visible
-        for kind, viewer in self.viewers.items():
-            viewer.interacted.connect(lambda kind=kind: setattr(self, "_last_viewer", kind))
-            viewer.figureClipped.connect(lambda data, kind=kind: self._add_figure(kind, data))
-            viewer.linkRequested.connect(lambda target, kind=kind: self._link_page(kind, target))
+        self.documents = DocumentsPanel(self._import_folder)
+        self.documents.viewer.figureClipped.connect(self._add_figure)
+        self.documents.viewer.linkRequested.connect(self._link_page)
         self.transcript = TranscriptPanel()
         self.ai = AIPanel(self.professors)
         self.recordings = RecordingsPanel(
@@ -102,12 +95,10 @@ class MainWindow(QMainWindow):
         self.docks: dict[str, QDockWidget] = {}
         for key, title, widget in (
             ("workspace", "Subjects", self.sidebar),
-            ("slides", "Slides", self.pdf),
+            ("documents", "Documents", self.documents),
             ("transcript", "Transcript", self.transcript),
             ("ai", "AI Tutor", self.ai),
             ("recordings", "Recordings", self.recordings),
-            ("exams", "Past Exams", self.exams),
-            ("exercises", "Exercises", self.exercises),
         ):
             dock = QDockWidget(title, self)
             dock.setObjectName(f"dock_{key}")
@@ -221,17 +212,17 @@ class MainWindow(QMainWindow):
             dock.setFloating(False)
             self.removeDockWidget(dock)  # drop old tab groups so the arrangement is rebuilt cleanly
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, d["workspace"])
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d["slides"])
-        for key in ("exams", "exercises", "ai", "transcript", "recordings"):
-            self.tabifyDockWidget(d["slides"], d[key])
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d["documents"])
+        for key in ("ai", "transcript", "recordings"):
+            self.tabifyDockWidget(d["documents"], d[key])
         for dock in d.values():
             dock.show()
-        d["slides"].raise_()
+        d["documents"].raise_()
         if ready:  # re-enable after Qt's queued show/hide events
             QTimer.singleShot(0, lambda: setattr(self, "_ready", True))
         # Dock sizes only stick once the window has its real size.
         QTimer.singleShot(
-            0, lambda: self.resizeDocks([d["workspace"], d["slides"]], [250, 480], Qt.Orientation.Horizontal)
+            0, lambda: self.resizeDocks([d["workspace"], d["documents"]], [250, 480], Qt.Orientation.Horizontal)
         )
 
     def _build_menus(self) -> None:
@@ -249,7 +240,7 @@ class MainWindow(QMainWindow):
         add(file_menu, "New Subject…", self.sidebar.new_subject, "Ctrl+Shift+N")
         add(file_menu, "New Lecture…", self.sidebar.new_lecture, "Ctrl+N")
         file_menu.addSeparator()
-        add(file_menu, "Import Slides (PDF)…", self._import_pdf, "Ctrl+Shift+I")
+        add(file_menu, "Import Document (PDF)…", self._import_pdf, "Ctrl+Shift+I")
         add(file_menu, "Import Audio…", self.recordings._import)
         file_menu.addSeparator()
         add(file_menu, "Reveal in Finder", self._reveal)
@@ -317,7 +308,7 @@ class MainWindow(QMainWindow):
         self.transcript.seekRequested.connect(self._seek_audio)
         self.transcript.labelsChanged.connect(self.schedule_index)
         self.transcript.classifyRequested.connect(self.classify)
-        self.pdf.pdfImported.connect(lambda _p: self.lecture and self.schedule_index(self.lecture))
+        self.documents.pdfImported.connect(lambda _p: self.lecture and self.schedule_index(self.lecture))
 
         self.ai.searchRequested.connect(self.search)
         self.ai.hitActivated.connect(self._open_hit)
@@ -340,9 +331,7 @@ class MainWindow(QMainWindow):
             self.welcome.show_subject(self.subject)
             self.center.setCurrentWidget(self.welcome)
         self.notes.set_lecture(lecture)
-        self.pdf.set_folder(lecture.dir("slides") if lecture else None)
-        self.exams.set_folder(self.subject.dir("exams") if self.subject else None)
-        self.exercises.set_folder(self.subject.dir("exercises") if self.subject else None)
+        self.documents.set_scope(self.subject, lecture)
         self.audio.set_lecture(lecture)
         self.transcript.set_lecture(lecture)
         self.ai.set_lecture(lecture)
@@ -390,7 +379,12 @@ class MainWindow(QMainWindow):
         if lecture is not None:
             self.audio.start_recording(lecture)
 
-    def _subject_folder(self, kind: str) -> Path | None:
+    def _import_folder(self, kind: str, name_hint: str) -> Path | None:
+        """Where a PDF of this type goes: slides to the open lecture (a new one if none
+        is open), past exams and tasks to the whole subject."""
+        if kind == "slides":
+            lecture = self.ensure_lecture(name_hint)
+            return lecture.dir("slides") if lecture else None
         subject = self.subject or self.sidebar.current_subject()
         if subject is None:
             QMessageBox.information(self, "Import", "Pick or create a subject in Subjects first.")
@@ -542,31 +536,33 @@ class MainWindow(QMainWindow):
         position = self.audio.audio_position()
         if position is not None:
             context.update(audio=position[0].stem, t=round(position[1], 1), clock=f"{clock_time(*position):%H:%M}")
-        visible = [k for k, v in self.viewers.items() if v.current() and v.isVisible() and not v.visibleRegion().isEmpty()]
-        if visible:
-            kind = self._last_viewer if self._last_viewer in visible else visible[0]
-            name, page = self.viewers[kind].current()
-            context.update(doc=kind, pdf=name, page=page)
+        viewer, document = self.documents.viewer, self.documents.current_document()
+        if document and viewer.current() and viewer.isVisible() and not viewer.visibleRegion().isEmpty():
+            types = document.types
+            context.update(doc=document.folder, pdf=document.path.name, page=viewer.current()[1], type=types[0] if types else "")
         return context
 
-    def _add_figure(self, kind: str, data: dict) -> None:
-        """A snip from a PDF viewer: store it with the lecture and put it into the notes."""
+    def _add_figure(self, data: dict) -> None:
+        """A snip from the PDF viewer: store it with the lecture and put it into the notes."""
+        document = self.documents.current_document()
         lecture = self.ensure_lecture(Path(data["pdf"]).stem)
         if lecture is None:
             return
-        unit = "slide" if kind == "slides" else "page"
-        caption = f"{'' if kind == 'slides' else DOC_NAMES[kind] + ': '}{data['pdf']}, {unit} {data['page']}"
-        source = {k: data[k] for k in ("pdf", "page", "text", "tables")} | {"doc": kind, "caption": caption}
+        prefix = "" if document.unit == "slide" else f"{document.type_label}: "
+        caption = f"{prefix}{data['pdf']}, {document.unit} {data['page']}"
+        source = {k: data[k] for k in ("pdf", "page", "text", "tables")} | {"doc": document.folder, "caption": caption}
         png = lecture.add_figure(data["png"], source)
         self.notes_action.setChecked(True)
         self.notes.insert_figure(png, caption, data["tables"])
         found = f" with {len(data['tables'])} table(s) as text" if data["tables"] else ""
         self.statusBar().showMessage(f"Added figure from {caption} to your notes{found}.", 6000)
 
-    def _link_page(self, kind: str, target: dict) -> None:
+    def _link_page(self, target: dict) -> None:
+        document = self.documents.current_document()
         if self.ensure_lecture(Path(target["pdf"]).stem) is not None:
             self.notes_action.setChecked(True)
-            self.notes.insert_slide_link({"doc": kind, **target})
+            types = document.types
+            self.notes.insert_slide_link({"doc": document.folder, "type": types[0] if types else "", **target})
 
     def _jump_to_anchor(self, context: dict) -> None:
         if "t" in context:
@@ -574,13 +570,11 @@ class MainWindow(QMainWindow):
                 self._seek_audio(context["audio"], context["t"])
             else:
                 self._seek_from_notes(int(context["t"]))
-        viewer = self.viewers.get(context.get("doc", ""))
-        if viewer is not None and context.get("pdf"):
-            self.docks[context["doc"]].show()
-            self.docks[context["doc"]].raise_()
-            if viewer.files.findText(context["pdf"]) < 0:
+        if context.get("doc") and context.get("pdf"):
+            self.docks["documents"].show()
+            self.docks["documents"].raise_()
+            if not self.documents.open_page(context["doc"], context["pdf"], context.get("page", 1)):
                 self.statusBar().showMessage(f"“{context['pdf']}” is no longer there.", 4000)
-            viewer.open_page(context["pdf"], context.get("page", 1))
 
     def _seek_audio(self, stem: str, seconds: float) -> None:
         if not self.audio.select_stem(stem):
@@ -753,8 +747,8 @@ class MainWindow(QMainWindow):
         if kind == "audio":
             self._seek_audio(name, value)
         else:
-            self.pdf.open_page(name, int(value))
-            self.docks["slides"].raise_()
+            self.documents.open_page(kind, name, int(value))
+            self.docks["documents"].raise_()
 
     # --- professors ---------------------------------------------------------
 
@@ -777,8 +771,8 @@ class MainWindow(QMainWindow):
     # --- misc ---------------------------------------------------------------
 
     def _import_pdf(self) -> None:
-        self.docks["slides"].raise_()
-        self.pdf.import_pdf()
+        self.docks["documents"].raise_()
+        self.documents.import_pdf()
 
     def _export_for_claude(self) -> None:
         if self.lecture is None:

@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..professors import ProfessorProfile
-from ..storage import Lecture, Subject, clock_time, read_timeline
+from ..storage import Document, Lecture, Subject, clock_time, read_timeline
 from . import pdf_tools, relevance, slide_links, speakers
 from .timestamps import make_stamp
 from .transcriber import Transcript
@@ -60,13 +60,14 @@ def build_prompt(lecture_name: str, n_questions: int) -> str:
 
 You are a university tutor. Study every section of this document — the professor
 profile, the student's notes, the lecture transcript, the slides and the subject's
-past exams and exercises — and prepare exam material for the lecture **{lecture_name}**.
+past exams and tasks — and prepare exam material for the lecture **{lecture_name}**.
 
 1. Tailor everything to the professor profile: match their testing style, question
    types and focus areas.
 2. Write **{n_questions} quiz questions** mixing types and difficulties, each
    pointing back to a slide page or transcript timestamp in `source_ref`.
-   Where past exams or exercise sheets are included, they show how this
+   Every document says its type (slides, past exam, task) and the student's own
+   tags in its heading. Where past exams or tasks are included, they show how this
    professor actually tests: weight `exam_focus` by them and write questions
    in their style. Figures the student clipped into the notes and text they
    highlighted on the slides are what they found important — make sure those
@@ -165,12 +166,24 @@ def _segment_finder(lecture: Lecture):
     return find
 
 
-def _anchor_tag(anchor: dict, find_segment) -> str:
+def _doc_words(lecture: Lecture):
+    """``words(target)`` → (prefix, unit) for a linked PDF by its current tags. A PDF that is
+    gone is named by the folder the link points to."""
+    types = {(d.folder, d.path.name): d.types for d in lecture.documents() + lecture.subject.documents()}
+
+    def words(target: dict) -> tuple[str, str]:
+        found = types.get((target["doc"], target["pdf"]))
+        return slide_links.words_for(found) if found is not None else slide_links.KINDS[target["doc"]]
+
+    return words
+
+
+def _anchor_tag(anchor: dict, find_segment, words) -> str:
     parts = []
     if anchor.get("pdf"):
-        unit = "slide" if anchor.get("doc", "slides") == "slides" else "page"
-        kind = {"exams": "past exam ", "exercises": "exercise "}.get(anchor.get("doc"), "")
-        parts.append(f"{kind}{anchor['pdf']} {unit} {anchor.get('page', 1)}")
+        doc = anchor.get("doc") if anchor.get("doc") in slide_links.KINDS else "slides"
+        kind, unit = words({"doc": doc, "pdf": anchor["pdf"]})
+        parts.append(f"{kind.lower()}{anchor['pdf']} {'slide' if unit == 'slide' else 'page'} {anchor.get('page', 1)}")
     if anchor.get("clock"):
         parts.append(anchor["clock"])
     if "t" in anchor and anchor.get("audio"):
@@ -186,6 +199,7 @@ def _tag_note_lines(lecture: Lecture, notes: str) -> str:
     if not anchors:
         return notes
     find_segment = _segment_finder(lecture)
+    words = _doc_words(lecture)
     lines = notes.splitlines()
     start = 0
     for anchor in anchors:
@@ -195,7 +209,7 @@ def _tag_note_lines(lecture: Lecture, notes: str) -> str:
             if line.lstrip().startswith("|") or FIGURE_RE.search(line):
                 continue  # table rows and figures are matched by neither
             if _plain(line) == wanted:
-                lines[i] = line.rstrip() + _anchor_tag(anchor, find_segment)
+                lines[i] = line.rstrip() + _anchor_tag(anchor, find_segment, words)
                 start = i + 1
                 break
     return "\n".join(lines)
@@ -218,11 +232,12 @@ def _notes_section(lecture: Lecture) -> str:
         return "\n".join(lines)
 
     notes = FIGURE_RE.sub(figure, _tag_note_lines(lecture, lecture.read_notes().strip()))
-    notes = slide_links.for_export(notes)
+    notes = slide_links.for_export(notes, _doc_words(lecture))
     return notes or "_No notes yet._"
 
 
-def _pdf_section(pdf: Path, unit: str = "Page") -> str:
+def _pdf_section(document: Document, unit: str = "Page") -> str:
+    pdf = document.path
     pages = pdf_tools.page_texts(pdf)
     marks = pdf_tools.highlights(pdf)
     blocks = []
@@ -231,21 +246,18 @@ def _pdf_section(pdf: Path, unit: str = "Page") -> str:
             continue
         marked = "".join(f"\n- ✎ highlighted: {m}" for m in marks.get(i, []))
         blocks.append(f"**{unit} {i}**{marked}\n\n{text}")
-    return f"### {pdf.name}\n\n" + ("\n\n".join(blocks) or "_No extractable text (scanned?)._")
+    own_tags = [t for t in document.tags if t not in document.types]
+    tags = f"\n\n**Tags:** {', '.join(own_tags)}" if own_tags else ""
+    return f"### {pdf.name} — Type: {document.type_label}{tags}\n\n" + ("\n\n".join(blocks) or "_No extractable text (scanned?)._")
 
 
-def _slides_section(lecture: Lecture) -> str:
-    return "\n\n".join(_pdf_section(pdf) for pdf in lecture.pdfs()) or "_No slides._"
+def _lecture_documents_section(lecture: Lecture) -> str:
+    return "\n\n".join(_pdf_section(doc) for doc in lecture.documents()) or "_No documents._"
 
 
 def _course_material_section(subject: Subject) -> str:
-    """Past exams and exercise sheets of the whole subject."""
-    parts = []
-    for kind, title in (("exams", "Past Exams"), ("exercises", "Exercise Sheets")):
-        pdfs = sorted(subject.dir(kind).glob("*.pdf"))
-        if pdfs:
-            parts.append(f"### {title}\n\n" + "\n\n".join(_pdf_section(pdf).replace("### ", "#### ", 1) for pdf in pdfs))
-    return "\n\n".join(parts) or "_None added yet._"
+    """The documents of the whole subject, e.g. past exams and tasks."""
+    return "\n\n".join(_pdf_section(doc) for doc in subject.documents()) or "_None added yet._"
 
 
 def build_context(lecture: Lecture, professor: ProfessorProfile | None, n_questions: int = 10) -> str:
@@ -274,11 +286,11 @@ def build_context(lecture: Lecture, professor: ProfessorProfile | None, n_questi
 
 {_transcript_section(lecture)}
 
-## Slides
+## Documents of This Lecture
 
-{_slides_section(lecture)}
+{_lecture_documents_section(lecture)}
 
-## Past Exams and Exercises ({subject.name}, all lectures)
+## Documents of the Whole Subject ({subject.name}, all lectures)
 
 {_course_material_section(subject)}
 """

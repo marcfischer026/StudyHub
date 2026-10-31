@@ -91,6 +91,9 @@ def stylesheet() -> str:
     QProgressBar#activityBar::chunk {{ border-radius: 3px; background: {ACCENT}; }}
     QFrame#activityPopup {{ background: palette(window); border: 1px solid {border}; border-radius: 10px; }}
     QFrame#rule {{ color: {border}; }}
+    QListWidget#documentList::item {{ border-radius: 6px; }}
+    QListWidget#documentList::item:hover {{ background: {hover}; }}
+    QListWidget#documentList::item:selected {{ background: {hover}; border: 1px solid {ACCENT}; }}
     QLabel#slidePage {{ background: white; border: 1px solid {border}; }}
     QWidget#playerBar {{ border-top: 1px solid {border}; }}
     QToolButton#playButton {{ font-size: 14px; min-width: 26px; }}

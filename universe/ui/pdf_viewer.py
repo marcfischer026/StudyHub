@@ -16,20 +16,16 @@ with the text and tables found in it, so the Claude export can read them.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 import pymupdf
 from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMenu,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QSpinBox,
     QToolButton,
@@ -37,9 +33,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..storage import import_file
-
-EMPTY_TEXT = "No {noun} yet.\n\nClick “Import PDF…” or drag a PDF file here."
 PAGE_GAP = 12
 KEEP_RENDERED = 6  # pages beyond this distance from the viewport drop their pixmap
 WORD_SLACK = 3  # points: a press this close to a word starts a text selection, not an area
@@ -138,21 +131,13 @@ class SlidePage(QLabel):
 
 
 class PdfViewer(QWidget):
-    pdfImported = Signal(object)  # Path
-    interacted = Signal()  # the user scrolled, clicked or switched files here
     figureClipped = Signal(dict)  # {"png": bytes, "pdf", "page", "text", "tables"}
     linkRequested = Signal(dict)  # {"pdf", "page"}: put a link to this page into the notes
 
-    def __init__(self, ensure_folder: Callable[[str], Path | None], noun: str = "slides", parent=None):
-        """Shows the PDFs in one folder. ``ensure_folder(name_hint)`` returns the
-        folder imports go to — e.g. creating a lecture named after the PDF when
-        none is open — or ``None`` if there is none (the user cancelled)."""
+    def __init__(self, parent=None):
+        """Shows one PDF; :class:`DocumentsPanel` picks which."""
         super().__init__(parent)
-        self.folder: Path | None = None
-        self.ensure_folder = ensure_folder
-        self.noun = noun
-        self.empty_text = EMPTY_TEXT.format(noun=noun)
-        self.setAcceptDrops(True)
+        self.path: Path | None = None
         self.doc: pymupdf.Document | None = None
         self.zoom = 1.0
         self.fit_mode = True  # zoom follows the panel width until the user zooms by hand
@@ -167,24 +152,15 @@ class PdfViewer(QWidget):
         self._drag_start: pymupdf.Point | None = None
         self._drag_word: int | None = None  # index of the word the drag started on
 
-        self.files = QComboBox()
-        self.files.currentIndexChanged.connect(self._open_selected)
-        self.files.activated.connect(self.interacted)
-        import_btn = QPushButton("Import PDF…")
-        import_btn.clicked.connect(self.import_pdf)
-
         self.prev_btn = QToolButton(text="◀")
-        self.prev_btn.setToolTip("Previous slide (←)")
+        self.prev_btn.setToolTip("Previous page (←)")
         self.prev_btn.clicked.connect(lambda: self.go_to_page(self.page.value() - 1))
         self.next_btn = QToolButton(text="▶")
-        self.next_btn.setToolTip("Next slide (→)")
+        self.next_btn.setToolTip("Next page (→)")
         self.next_btn.clicked.connect(lambda: self.go_to_page(self.page.value() + 1))
         self.page = QSpinBox(minimum=1, maximum=1)
         self.page.setKeyboardTracking(False)
         self.page.valueChanged.connect(self.go_to_page)
-        for control in (self.prev_btn, self.next_btn):
-            control.clicked.connect(self.interacted)
-        self.page.valueChanged.connect(self.interacted)
         self.page_count = QLabel("/ 0")
         zoom_out = QToolButton(text="−")
         zoom_out.setToolTip("Zoom out")
@@ -193,7 +169,7 @@ class PdfViewer(QWidget):
         zoom_in.setToolTip("Zoom in")
         zoom_in.clicked.connect(lambda: self._set_zoom(self.zoom * 1.2))
         fit = QToolButton(text="Fit")
-        fit.setToolTip("Fit slides to the panel width")
+        fit.setToolTip("Fit pages to the panel width")
         fit.clicked.connect(self.fit_width)
         self.highlighter = QToolButton(text="Mark", checkable=True)
         self.highlighter.setToolTip(
@@ -228,9 +204,6 @@ class PdfViewer(QWidget):
                 )
             )
 
-        top = QHBoxLayout()
-        top.addWidget(self.files, 1)
-        top.addWidget(import_btn)
         nav = QHBoxLayout()
         for w in (self.prev_btn, self.page, self.page_count, self.next_btn):
             nav.addWidget(w)
@@ -246,7 +219,7 @@ class PdfViewer(QWidget):
         self.pages_layout.setSpacing(PAGE_GAP)
         self.pages_layout.setContentsMargins(PAGE_GAP, PAGE_GAP, PAGE_GAP, PAGE_GAP)
         self.pages_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.message = QLabel(self.empty_text, alignment=Qt.AlignmentFlag.AlignCenter, wordWrap=True)
+        self.message = QLabel("", alignment=Qt.AlignmentFlag.AlignCenter, wordWrap=True)
         self.message.setObjectName("muted")
         self.pages_layout.addWidget(self.message)
 
@@ -267,68 +240,14 @@ class PdfViewer(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.addLayout(top)
         layout.addLayout(nav)
         layout.addWidget(self.scroll, 1)
 
-    # --- folder / files -----------------------------------------------------
-
-    def set_folder(self, folder: Path | None) -> None:
-        if folder == self.folder:
-            return  # keep the open PDF and page, e.g. when switching lectures of one subject
-        self.folder = folder
-        self.refresh_files()
-
-    def refresh_files(self, select: Path | None = None) -> None:
-        self.files.blockSignals(True)
-        self.files.clear()
-        for pdf in sorted(self.folder.glob("*.pdf")) if self.folder and self.folder.is_dir() else []:
-            self.files.addItem(pdf.name, str(pdf))
-        if select is not None:
-            self.files.setCurrentIndex(max(0, self.files.findData(str(select))))
-        self.files.blockSignals(False)
-        self._open_selected()
+    # --- file ---------------------------------------------------------------
 
     def current(self) -> tuple[str, int] | None:
         """Open file name and page, if a PDF is showing."""
-        return (self.files.currentText(), self.page.value()) if self.doc is not None else None
-
-    def open_page(self, pdf_name: str, page: int) -> None:
-        index = self.files.findText(pdf_name)
-        if index >= 0:
-            self.files.setCurrentIndex(index)
-            QTimer.singleShot(0, lambda: self.go_to_page(page))  # after the page column is laid out
-
-    def import_pdf(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, f"Import {self.noun}", str(Path.home()), "PDF files (*.pdf)")
-        self.import_paths([Path(p) for p in paths])
-
-    def import_paths(self, paths: list[Path]) -> None:
-        pdfs = [p for p in paths if p.suffix.lower() == ".pdf" and p.is_file()]
-        if not pdfs:
-            return
-        folder = self.ensure_folder(pdfs[0].stem)
-        if folder is None:
-            return
-        self.folder = folder
-        last = None
-        for path in pdfs:
-            try:
-                last = import_file(path, folder)
-            except OSError as exc:
-                QMessageBox.warning(self, f"Import {self.noun}", f"Could not import {path.name}:\n{exc}")
-                continue
-            self.pdfImported.emit(last)
-        if last:
-            self.refresh_files(select=last)
-
-    def dragEnterEvent(self, event) -> None:
-        if any(url.toLocalFile().lower().endswith(".pdf") for url in event.mimeData().urls()):
-            event.acceptProposedAction()
-
-    def dropEvent(self, event) -> None:
-        self.import_paths([Path(url.toLocalFile()) for url in event.mimeData().urls()])
-        event.acceptProposedAction()
+        return (self.path.name, self.page.value()) if self.doc is not None else None
 
     # --- document -----------------------------------------------------------
 
@@ -351,18 +270,19 @@ class PdfViewer(QWidget):
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
 
-    def _open_selected(self) -> None:
+    def open_file(self, path: Path | None, message: str = "") -> None:
+        """Show ``path``, or ``message`` when there is nothing to show."""
         if self.doc is not None:
             self.doc.close()
             self.doc = None
-        path = self.files.currentData()
-        if not path:
-            self._show_message(self.empty_text)
+        self.path = path
+        if path is None:
+            self._show_message(message)
             return
         try:
             self.doc = pymupdf.open(path)
         except Exception as exc:  # damaged or encrypted PDF
-            self._show_message(f"Cannot open {Path(path).name}:\n{exc}")
+            self._show_message(f"Cannot open {path.name}:\n{exc}")
             return
         self.message.hide()
         self._clear_pages()
@@ -414,8 +334,6 @@ class PdfViewer(QWidget):
         QTimer.singleShot(0, lambda: self.go_to_page(keep_page))
 
     def eventFilter(self, obj, event) -> bool:
-        if event.type() in (QEvent.Type.Wheel, QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
-            self.interacted.emit()
         if obj is self.scroll.viewport() and event.type() == QEvent.Type.Resize and self.fit_mode:
             self._refit.start()
         if obj is self.scroll and event.type() == QEvent.Type.KeyPress and event.modifiers() == Qt.KeyboardModifier.NoModifier:
@@ -666,7 +584,7 @@ class PdfViewer(QWidget):
         png, text, tables = clip_figure(self.doc[index], area)
         self.clear_selection()
         self.figureClipped.emit(
-            {"png": png, "pdf": self.files.currentText(), "page": index + 1, "text": text, "tables": tables}
+            {"png": png, "pdf": self.path.name, "page": index + 1, "text": text, "tables": tables}
         )
 
     def _highlight_at(self, page: pymupdf.Page, point: pymupdf.Point):
@@ -741,13 +659,13 @@ class PdfViewer(QWidget):
         menu.addSeparator()
         snip = menu.addAction("✂ Add selected area to notes", self.clip_selection)
         snip.setEnabled(index == self._sel_page and self._sel_area is not None)
-        menu.addAction("✂ Add whole slide to notes", lambda: self.clip_selection(index, self.doc[index].rect))
+        menu.addAction("✂ Add whole page to notes", lambda: self.clip_selection(index, self.doc[index].rect))
         menu.addAction(
-            "→ Link this slide in notes",
-            lambda: self.linkRequested.emit({"pdf": self.files.currentText(), "page": index + 1}),
+            "→ Link this page in notes",
+            lambda: self.linkRequested.emit({"pdf": self.path.name, "page": index + 1}),
         )
         menu.addSeparator()
         page_text = self.doc[index].get_text("text").strip()
-        slide_copy = menu.addAction("Copy slide text", lambda: QApplication.clipboard().setText(page_text))
+        slide_copy = menu.addAction("Copy page text", lambda: QApplication.clipboard().setText(page_text))
         slide_copy.setEnabled(bool(page_text))
         menu.exec(global_pos)

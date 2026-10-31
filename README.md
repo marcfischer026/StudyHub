@@ -11,7 +11,7 @@ A local-first university learning workspace for Apple Silicon Macs. Organise any
 - **Notes in the centre**: rich-text editor saved as Markdown with autosave, the lecture header (subject, professor) above it and the audio player (`pygame.mixer`, ±10 s, slider) below it.
 - **Dockable panels** (`QDockWidget`) around it — drag, float, tab or close them. Closed panels come back from the **▦ Panels** button (top right of the toolbar), the *View* menu, or `⌘1`–`⌘5`; *Reset Layout* in the same menu restores the default:
   - **Subjects**: subject/lecture tree.
-  - **Slides**: PDF viewer (PyMuPDF). Scroll continuously through all slides (trackpad, ↑/↓), flip with ←/→ or ◀ ▶, zoom with − / + / Fit (Fit follows the panel width). Drag PDFs onto it to import. Drag across slide text to select it and copy it (⌘C or right-click → *Copy* / *Copy slide text*); the **Mark** tool highlights text or any area in yellow, green, blue or pink, saved into the PDF (right-click a mark to remove it).
+  - **Documents**: every PDF of the open lecture and of its subject in one list. Each has coloured tags: its type (**Slides**, **Past exam**, **Task**) and your own. Right-click a document or use *🏷 Tags* to add or remove tags, create new ones (a colour alone is enough) and change colours; click tags above the list to filter (several narrow it down). Import asks for the type: slides belong to the open lecture, past exams and tasks to the whole subject, and show up under every lecture of it. Changing a tag never moves the file. Below the list is the PDF viewer (PyMuPDF). Scroll continuously through all slides (trackpad, ↑/↓), flip with ←/→ or ◀ ▶, zoom with − / + / Fit (Fit follows the panel width). Drag PDFs onto the panel to import. Drag across slide text to select it and copy it (⌘C or right-click → *Copy* / *Copy page text*); the **Mark** tool highlights text or any area in yellow, green, blue or pink, saved into the PDF (right-click a mark to remove it).
   - **Transcript**: whisper.cpp segments; click a line to play from there.
   - **AI Tutor**: Claude export/import, interactive Quiz, Analysis, and Search tabs.
   - **Recordings**: the lecture's audio files (`sounddevice` records 16 kHz mono WAV), import, transcription, auto-transcribe switch.
@@ -93,7 +93,7 @@ To try it out with a throwaway workspace, set `UNIVERSE_DATA_DIR` to another fol
 1. Press **● Record** (`⌘R`) when class starts — or create a **+ Subject** and **+ Lecture** first if you prefer.
 2. Take notes. Press `⌘T` (or **⏱ Timestamp**) to drop a `[▶ HH:MM:SS]` stamp at the current moment.
 3. Press **■ Stop**. whisper.cpp transcribes in the background and the Transcript panel fills in.
-4. Optional: **Import PDF…** in the Slides panel; click *Assign a professor* under the lecture title.
+4. Optional: **Import PDF…** in the Documents panel; click *Assign a professor* under the lecture title.
 5. Rename the auto-named lecture any time (right-click it in the sidebar).
 6. **⇪ Export for Claude** (`⌘E`) writes `Context.md` and copies it to the clipboard. Paste it into Claude.
 7. Copy Claude's reply, click **⇩ Import reply**, paste, press **Import AI Response**.
@@ -108,14 +108,14 @@ To try it out with a throwaway workspace, set `UNIVERSE_DATA_DIR` to another fol
 | `⌘⇧Space` | Play / pause |
 | `⌘E` | Export for Claude |
 | `⌘N` / `⌘⇧N` | New lecture / new subject |
-| `⌘⇧I` | Import slides (PDF) |
+| `⌘⇧I` | Import a document (PDF) |
 | `⌘S` | Save notes (autosave also runs) |
-| `⌘1` … `⌘5` | Show / hide Subjects, Slides, Transcript, AI Tutor, Recordings |
+| `⌘1` … `⌘5` | Show / hide Subjects, Documents, Transcript, AI Tutor, Recordings |
 | `⌘B` / `⌘I` | Bold / italic |
 
 ## Claude round trip
 
-`Export for Claude` builds `Lectures/<Lecture>/ai/Context.md` containing the professor profile, your notes, the timestamped transcript, the text of every slide page, and instructions telling Claude to answer with exactly one JSON block. You choose the number of quiz questions.
+`Export for Claude` builds `Lectures/<Lecture>/ai/Context.md` containing the professor profile, your notes, the timestamped transcript, the text of every document with its type and tags, and instructions telling Claude to answer with exactly one JSON block. You choose the number of quiz questions.
 
 The importer accepts the reply with or without `` ``` `` fences or surrounding prose, extracts the JSON and validates it: `summary`, `key_concepts`, `exam_focus`, `knowledge_gaps`, `quizzes` (`multiple_choice`, `true_false`, `short_answer`, each with answer, explanation and a slide/timestamp `source_ref`) and `flashcards`. If something is off, it lists exactly what — nothing is saved until the reply is valid.
 
@@ -216,13 +216,15 @@ git config core.hooksPath .githooks
 ├── models/ggml-base.en.bin
 ├── Professors/<id>.json
 └── Subjects/<Subject>/
-    ├── subject.json            name, description, default professor
+    ├── subject.json            name, description, default professor, tag colours
     ├── .index/                 LanceDB vector store
+    ├── exams/                  PDFs imported as past exams + tags.json
+    ├── exercises/              PDFs imported as tasks + tags.json
     └── Lectures/<Lecture>/
         ├── lecture.json        name, professor override
         ├── notes.md
         ├── audio/              recordings ("BWL 2026-10-28 15.30.wav") + imported audio
-        ├── slides/             PDFs
+        ├── slides/             PDFs imported as slides + tags.json
         ├── transcripts/        <audio>.json (segments) + <audio>.txt
         └── ai/                 Context.md, response_*.json, latest.json, quiz_attempts.json
 ```

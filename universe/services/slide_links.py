@@ -6,7 +6,9 @@ import re
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-KINDS = {"slides": ("", "slide"), "exams": ("Past exam ", "p."), "exercises": ("Exercise ", "p.")}
+# ``doc`` in a link is the folder the PDF is stored in; these are the words for a document type.
+WORDS = {"Slides": ("", "slide"), "Past exam": ("Past exam ", "p."), "Task": ("Task ", "p.")}
+KINDS = {"slides": WORDS["Slides"], "exams": WORDS["Past exam"], "exercises": WORDS["Task"]}
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\((slide:[^)\s]+)\)")
 
 
@@ -22,19 +24,25 @@ def parse_href(href: str) -> dict | None:
     return {"doc": match.group(1), "pdf": unquote(match.group(2)), "page": int(match.group(3))}
 
 
+def words_for(types: list[str]) -> tuple[str, str]:
+    """(prefix, unit) for a document with these type tags."""
+    return WORDS[types[0]] if types else ("", "p.")
+
+
 def link_text(target: dict) -> str:
-    kind, unit = KINDS[target["doc"]]
+    kind, unit = words_for([target["type"]] if target["type"] else []) if "type" in target else KINDS[target["doc"]]
     return f"→ {kind}{Path(target['pdf']).stem}, {unit} {target['page']}"
 
 
-def for_export(markdown: str) -> str:
-    """Replace links by plain references that name the PDF as the export's sections do."""
+def for_export(markdown: str, words=None) -> str:
+    """Replace links by plain references that name the PDF as the export's sections do.
+    ``words(target)`` gives (prefix, unit); by default they follow the PDF's folder."""
 
     def reference(match: re.Match) -> str:
         target = parse_href(match.group(2))
         if target is None:
             return match.group(1)
-        kind, unit = KINDS[target["doc"]]
+        kind, unit = words(target) if words else KINDS[target["doc"]]
         return f"(→ see {kind.lower()}{target['pdf']} {unit} {target['page']})"
 
     return MARKDOWN_LINK_RE.sub(reference, markdown)
