@@ -64,7 +64,8 @@ _MARKER = re.compile(
     re.IGNORECASE,
 )
 _CONTINUE = re.compile(r"\\?\[(?:\\?\[)?\s*CONTINUE[^\]\n]*\\?\](?:\\?\])?\s*$", re.IGNORECASE | re.MULTILINE)
-_FENCE = re.compile(r"^\s*```[\w-]*\s*$")
+_FENCE = re.compile(r"^\s*(?:```|~~~)[\w-]*\s*$")
+_FENCE_JOIN = re.compile(r"^\s*(?:```|~~~)\s*\n\s*(?:```|~~~)[\w-]*\s*$\n?", re.MULTILINE)  # two fenced parts pasted as one
 _DECORATION = " \t*_#>`"
 _FIGURE_LINE = re.compile(r"^\W*\[?\s*(?:Figure|Abbildung|Grafik)\s*:.*$", re.IGNORECASE | re.MULTILINE)
 _LATEX_COMMAND = re.compile(r"\\[a-zA-Z]+")
@@ -119,9 +120,9 @@ class PageCheck:
         return "; ".join(problems) or "matches the PDF"
 
 
-def check_page(raw_text: str, markdown: str, page: int = 0, common_numbers: frozenset[str] = frozenset()) -> PageCheck:
+def check_page(raw_text: str, markdown: str, page: int = 0, common_numbers: frozenset[str] = frozenset(), printed_offset: int = 0) -> PageCheck:
     """``common_numbers`` repeat through the document (dates in footers), which the tool may drop,
-    as it may the page's own number."""
+    as it may the page's own number, also as printed on the slide (``printed_offset``)."""
     raw_words = _words(raw_text)
     if not raw_words and not _numbers(raw_text):
         return PageCheck(scanned=True)
@@ -129,7 +130,7 @@ def check_page(raw_text: str, markdown: str, page: int = 0, common_numbers: froz
     words = _words(own_text)
     coverage = len(raw_words & _words(markdown)) / len(raw_words) if raw_words else 1.0
     added = len(words - raw_words) / len(words) if words else 0.0
-    ignored = common_numbers | {str(page)}
+    ignored = common_numbers | {str(page), str(page + printed_offset)}
     missing = sorted((_numbers(raw_text) - _numbers(markdown)) - ignored, key=lambda n: (len(n), n))
     return PageCheck(coverage, added, tuple(missing))
 
@@ -143,6 +144,14 @@ def common_numbers(raw_texts: list[str]) -> frozenset[str]:
         for number in _numbers(text):
             counts[number] = counts.get(number, 0) + 1
     return frozenset(n for n, count in counts.items() if count > len(raw_texts) / 2)
+
+
+def printed_page_offset(raw_texts: list[str]) -> int:
+    """How far the numbers printed on the slides run ahead of the PDF's pages: a title slide often goes uncounted."""
+    found = [_numbers(text) for text in raw_texts]
+    hits = {offset: sum(str(page + offset) in numbers for page, numbers in enumerate(found, start=1)) for offset in range(-3, 11)}
+    best = max(hits, key=lambda offset: hits[offset])
+    return best if hits[best] >= 3 and hits[best] > len(found) / 3 else 0
 
 
 # --- parsing what came back --------------------------------------------------
@@ -160,7 +169,7 @@ def _unfence(text: str) -> str:
 def parse_converted(text: str) -> tuple[list[tuple[int, int, str]], str]:
     """``([(document number, page, markdown), …], text before the first stamp)``. A page
     stamped twice is kept twice, in order; the last one wins when saved."""
-    text = _CONTINUE.sub("", _unfence(text))
+    text = _CONTINUE.sub("", _FENCE_JOIN.sub("", _unfence(text)))
     # At the start of a line, after decoration: "see [[SL01 p.2]]" in running text is no page boundary.
     matches = [m for m in _MARKER.finditer(text) if not text[text.rfind("\n", 0, m.start()) + 1 : m.start()].strip(_DECORATION + "\\")]
     pages = []
@@ -366,11 +375,11 @@ def import_converted(view: "SubjectView", text: str) -> ConversionReport:
         stored = load_pages(view.subject, document.key) | new_pages
         save_pages(view.subject, document.key, document.title, document.ref, stored)
         raw = {p.number: p.raw_text for p in document.pages} or dict(enumerate(pdf_tools.page_texts(document.path), start=1))
-        common = common_numbers(list(raw.values()))
+        common, offset = common_numbers(list(raw.values())), printed_page_offset([raw.get(n, "") for n in range(1, document.page_count + 1)])
         doc_report = DocumentReport(document.ref, document.title, sorted(new_pages))
         doc_report.missing = [n for n in range(1, document.page_count + 1) if n not in stored]
         for page in sorted(new_pages):
-            result = check_page(raw.get(page, ""), new_pages[page], page, common)
+            result = check_page(raw.get(page, ""), new_pages[page], page, common, offset)
             if not result.ok:
                 doc_report.weak.append((page, result.describe()))
         report.documents.append(doc_report)

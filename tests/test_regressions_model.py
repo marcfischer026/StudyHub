@@ -37,6 +37,11 @@ class PdfModel1Tests(unittest.TestCase):
 
 
 class PdfModel11Tests(unittest.TestCase):
+    def test_two_fenced_parts_pasted_as_one_leave_no_fence_behind(self):
+        for fence in ("```", "~~~"):
+            pages, _ = parse_converted(f"{fence}markdown\n[[SL01 p.1]]\nEins\n{fence}\n{fence}markdown\n[[SL01 p.2]]\nZwei\n{fence}")
+            self.assertEqual([body for _, _, body in pages], ["Eins", "Zwei"])
+
     def test_same_line_stamp_keeps_bold_markup(self):
         pages, _ = parse_converted("[[SL01 p.1]] **Bilanz**")
         self.assertEqual(pages, [(1, 1, "**Bilanz**")])

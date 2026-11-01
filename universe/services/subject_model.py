@@ -322,11 +322,12 @@ def _load_pages(subject: Subject, primary: Path, copies: list[Path], key: str) -
         for number, marks in pdf_tools.page_marks(copy).items():
             extra_marks[number] = extra_marks.get(number, ()) + marks
     common = pdf_conversion.common_numbers([c.text for c in contents])
+    offset = pdf_conversion.printed_page_offset([c.text for c in contents])
     pages = []
     for content in contents:
         marks = tuple(dict.fromkeys(content.marks + extra_marks.get(content.number, ())))  # a mark made in both copies counts once
         markdown = converted.get(content.number, "")
-        check = pdf_conversion.check_page(content.text, markdown, content.number, common) if markdown else None
+        check = pdf_conversion.check_page(content.text, markdown, content.number, common, offset) if markdown else None
         pages.append(PageView(content.number, content.text, content.tables, marks, content.visual, markdown, check))
     return tuple(pages)
 
@@ -731,11 +732,11 @@ def best_pages(document: Document, subject: Subject) -> list[tuple[int, str]]:
     except Exception:  # load_subject reports it
         return []
     converted = pdf_conversion.load_pages(subject, key)
-    common = pdf_conversion.common_numbers(texts)
+    common, offset = pdf_conversion.common_numbers(texts), pdf_conversion.printed_page_offset(texts)
     pages = []
     for number, text in enumerate(texts, start=1):
         markdown = converted.get(number, "")
-        good = markdown and pdf_conversion.check_page(text, markdown, number, common).ok
+        good = markdown and pdf_conversion.check_page(text, markdown, number, common, offset).ok
         pages.append((number, markdown if good else text))
     return pages
 

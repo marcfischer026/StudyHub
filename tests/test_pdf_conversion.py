@@ -160,6 +160,10 @@ class CheckTests(unittest.TestCase):
     def test_footer_numbers_and_the_page_number_may_go(self):
         common = pdf_conversion.common_numbers(["WS 2026 a", "WS 2026 b", "WS 2026 c", "WS 2026 d 7"])
         self.assertEqual(common, frozenset({"2026"}))
+        self.assertEqual(pdf_conversion.printed_page_offset([f"Folie {n + 1}" for n in range(1, 7)]), 1)
+        self.assertEqual(pdf_conversion.printed_page_offset(["Bilanz 1200", "Aktiva", "Passiva", "Umlauf 77"]), 0)
+        self.assertTrue(check_page("Bilanz 8", "Bilanz", page=7, printed_offset=1).ok)
+        self.assertFalse(check_page("Bilanz 9", "Bilanz", page=7, printed_offset=1).ok)
         self.assertTrue(check_page("Bilanz 2026 7", "Bilanz", page=7, common_numbers=common).ok)
 
 
