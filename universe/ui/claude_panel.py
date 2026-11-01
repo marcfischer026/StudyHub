@@ -587,6 +587,7 @@ class ClaudePanel(ScopedPanel):
             parts = [f"Wrote {len(export.files)} PDF file{'s' * (len(export.files) != 1)}. Attach them to Gemini or Copilot and paste the prompt from the clipboard."]
             if export.already_converted:
                 parts.append(f"{export.already_converted} already converted, left out.")
+            parts += export.problems
             self._show_conversion_text("\n".join(parts))
 
         self._run("Writing stamped PDFs…", lambda: pdf_conversion.export_pdfs(self._load(subject)), done)

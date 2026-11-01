@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 import pymupdf
 
 from ..storage import Subject, atomic_write_text
+from . import pdf_tools
 
 if TYPE_CHECKING:
     from .subject_model import DocumentView, SubjectView
@@ -160,13 +161,16 @@ def parse_converted(text: str) -> tuple[list[tuple[int, int, str]], str]:
     """``([(document number, page, markdown), …], text before the first stamp)``. A page
     stamped twice is kept twice, in order; the last one wins when saved."""
     text = _CONTINUE.sub("", _unfence(text))
-    matches = list(_MARKER.finditer(text))
+    # At the start of a line, after decoration: "see [[SL01 p.2]]" in running text is no page boundary.
+    matches = [m for m in _MARKER.finditer(text) if not text[text.rfind("\n", 0, m.start()) + 1 : m.start()].strip(_DECORATION + "\\")]
     pages = []
     for i, match in enumerate(matches):
         groups = match.groups()
         number, page = (groups[1], groups[2]) if groups[0] else (groups[4], groups[5])
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        body = text[match.end() : end].lstrip(" \t*_").rstrip()
+        head, sep, tail = text[match.end() : end].partition("\n")
+        # On its own line the stamp takes its closing ** along; text after it keeps its opening **.
+        body = (tail if not head.strip(_DECORATION + "\\") else head.lstrip(" \t") + sep + tail).rstrip()
         if i + 1 < len(matches):  # "## [[SL04 p.2]]": the decoration before a stamp is not page text
             lines = body.split("\n")
             lines[-1] = lines[-1].rstrip(_DECORATION)
@@ -196,7 +200,10 @@ def load_pages(subject: Subject, key: str) -> dict[int, str]:
     path = converted_path(subject, key)
     if path is None:
         return {}
-    pages, _ = parse_converted(path.read_text(encoding="utf-8"))
+    try:
+        pages, _ = parse_converted(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # load_subject reports it
+        return {}
     return {page: body for _, page, body in pages}
 
 
@@ -218,6 +225,7 @@ class PdfExport:
     folder: Path
     files: list[Path] = field(default_factory=list)
     already_converted: int = 0  # documents left out because they are complete
+    problems: list[str] = field(default_factory=list)  # documents left out because they cannot be read
 
 
 def _stamp_page(page: pymupdf.Page, text: str) -> None:
@@ -268,12 +276,18 @@ def export_pdfs(view: "SubjectView", only_missing: bool = True, part_pages: int 
     for document in view.documents:
         if document.excluded:
             continue
+        if not document.page_count:
+            result.problems.append(f"{document.path.name} could not be read.")
+            continue
         done = load_pages(view.subject, document.key) if only_missing else {}
         pages = [n for n in range(1, document.page_count + 1) if n not in done]
         if not pages:
             result.already_converted += 1
             continue
-        result.files += _write_copies(document, pages, folder, part_pages)
+        try:
+            result.files += _write_copies(document, pages, folder, part_pages)
+        except Exception as exc:  # one bad file must not stop the others
+            result.problems.append(f"{document.path.name} could not be written: {exc}")
     atomic_write_text(folder / PROMPT_FILE, PROMPT)
     return result
 
@@ -351,7 +365,7 @@ def import_converted(view: "SubjectView", text: str) -> ConversionReport:
         document = by_number[number]
         stored = load_pages(view.subject, document.key) | new_pages
         save_pages(view.subject, document.key, document.title, document.ref, stored)
-        raw = {p.number: p.raw_text for p in document.pages}
+        raw = {p.number: p.raw_text for p in document.pages} or dict(enumerate(pdf_tools.page_texts(document.path), start=1))
         common = common_numbers(list(raw.values()))
         doc_report = DocumentReport(document.ref, document.title, sorted(new_pages))
         doc_report.missing = [n for n in range(1, document.page_count + 1) if n not in stored]

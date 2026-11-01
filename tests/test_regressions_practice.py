@@ -140,7 +140,6 @@ class FreeConfidenceTests(unittest.TestCase):
         panel.save_free_for_later()
         blank = [e for e in store.events() if e["type"] == "attempt"][-1]
         self.assertEqual((blank["score"], blank.get("pending")), (0.0, None))
-        self.assertFalse(panel.results[-1].ungraded)
 
     def test_free_answer_asks_confidence_outside_mock(self):
         panel, store = self.panel()

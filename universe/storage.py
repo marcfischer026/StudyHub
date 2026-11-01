@@ -98,10 +98,12 @@ def safe_name(name: str) -> str:
 
 
 def read_json(path: Path) -> dict:
+    """Empty for a file that is missing, no longer parses, or holds something else: every sidecar is an object."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -123,8 +125,8 @@ def _set_aside_if_broken(path: Path) -> None:
     """A file that no longer parses may still be repaired by hand: the next write must not wipe it."""
     try:
         raw = path.read_bytes()
-        if raw.strip():
-            json.loads(raw)
+        if raw.strip() and not isinstance(json.loads(raw), dict):
+            raise ValueError
     except OSError:
         pass
     except ValueError:

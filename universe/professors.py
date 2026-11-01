@@ -58,10 +58,9 @@ class ProfessorStore:
         profiles = []
         for path in self.root.glob("*.json"):
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                profiles.append(self._from_dict(json.loads(path.read_text(encoding="utf-8"))))
+            except (OSError, ValueError, TypeError, AttributeError):  # a hand-edited file gone wrong
                 continue
-            profiles.append(self._from_dict(raw))
         return sorted(profiles, key=lambda p: p.name.lower())
 
     def get(self, prof_id: str) -> ProfessorProfile | None:

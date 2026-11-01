@@ -725,7 +725,7 @@ def _unconverted_summary(documents: list[DocumentView]) -> list[str]:
 
 
 def _data_check(view: SubjectView, knowledge, lectures: list[LectureView]) -> list[str]:
-    warnings = []
+    warnings = list(view.problems)
     excluded = _excluded(view)
     for d in _going_documents(view, lectures):
         failed = [p.number for p in d.pages if p.check and not p.check.ok]

@@ -29,7 +29,7 @@ import json
 import re
 import threading
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -287,6 +287,7 @@ class SubjectView:
     lectures: tuple[LectureView, ...]
     documents: tuple[DocumentView, ...]
     deadlines: tuple[moodle_ical.Event, ...]
+    problems: list[str] = field(default_factory=list)  # what could not be read, for the export's data check
 
     def document(self, ref_or_key_or_number: str | int) -> DocumentView | None:
         wanted = ref_or_key_or_number
@@ -306,7 +307,7 @@ class SubjectView:
 
     @property
     def documents_for_export(self) -> tuple[DocumentView, ...]:
-        return tuple(d for d in self.documents if not d.excluded)
+        return tuple(d for d in self.documents if not d.excluded and d.page_count)
 
 
 def doc_prefix(types: tuple[str, ...] | list[str]) -> str:
@@ -330,19 +331,26 @@ def _load_pages(subject: Subject, primary: Path, copies: list[Path], key: str) -
     return tuple(pages)
 
 
-def _load_documents(subject: Subject, lectures: list[tuple[Lecture, str]], registry: IdRegistry, pages: bool) -> tuple[DocumentView, ...]:
-    """Every PDF of the subject, one view per document however many copies there are. Lectures first."""
+def _load_documents(subject: Subject, lectures: list[tuple[Lecture, str]], registry: IdRegistry, pages: bool, problems: list[str]) -> tuple[DocumentView, ...]:
+    """Every PDF of the subject, one view per document however many copies there are. Lectures first.
+    One that cannot be read stays listed with no pages, under a key from its bytes, and goes on ``problems``."""
     grouped: dict[str, list[tuple[Document, str]]] = {}
     counts: dict[str, int] = {}
+
+    def add(document: Document, lecture_ref: str) -> None:
+        try:
+            key, counts_here = document_key(document.path)
+        except Exception as exc:  # PyMuPDF raises several kinds, and one bad file must not hide the subject
+            key, counts_here = f"d_{hashlib.sha256(document.path.read_bytes()).hexdigest()[:12]}", 0
+            problems.append(f"{document.path.name} could not be read: {exc}")
+        counts[key] = counts_here
+        grouped.setdefault(key, []).append((document, lecture_ref))
+
     for lecture, lecture_ref in lectures:
         for document in lecture.documents():
-            key, counts_here = document_key(document.path)
-            counts[key] = counts_here
-            grouped.setdefault(key, []).append((document, lecture_ref))
+            add(document, lecture_ref)
     for document in subject.documents():
-        key, counts_here = document_key(document.path)
-        counts[key] = counts_here
-        grouped.setdefault(key, []).append((document, ""))
+        add(document, "")
 
     excluded = subject.excluded_documents
     views = []
@@ -352,6 +360,8 @@ def _load_documents(subject: Subject, lectures: list[tuple[Lecture, str]], regis
         types = tuple(t for t in DOC_TYPES.values() if any(t in d.tags for d in documents))
         tags = tuple(dict.fromkeys(t for d in documents for t in d.tags if t not in DOC_TYPES.values()))
         converted = pdf_conversion.load_pages(subject, key)
+        if not converted and (stored := pdf_conversion.converted_path(subject, key)):
+            problems.append(f"{stored.name} could not be read.")
         views.append(
             DocumentView(
                 key=key,
@@ -365,7 +375,7 @@ def _load_documents(subject: Subject, lectures: list[tuple[Lecture, str]], regis
                 whole_subject=any(not ref for _, ref in copies),
                 page_count=counts[key],
                 converted_pages=sum(1 for n in converted if 1 <= n <= counts[key]),
-                pages=_load_pages(subject, documents[0].path, [d.path for d in documents[1:]], key) if pages else (),
+                pages=_load_pages(subject, documents[0].path, [d.path for d in documents[1:]], key) if pages and counts[key] else (),
                 excluded=key in excluded,
             )
         )
@@ -447,11 +457,11 @@ def _build_lines(ref: str, segments: tuple[SegmentView, ...]) -> tuple[LineView,
 
 def _page_ref_finder(lecture: Lecture, documents: tuple[DocumentView, ...]):
     """``find(folder, pdf name, page)`` → "SL04.p12", or "" for a PDF that is gone."""
-    by_path = {occurrence.path: view.ref for view in documents for occurrence in view.occurrences}
+    by_path = {unicodedata.normalize("NFC", str(occurrence.path)): view.ref for view in documents for occurrence in view.occurrences}
 
     def find(folder: str, name: str, page: int | None) -> str:
         base = lecture.path / "slides" if folder == "slides" else lecture.subject.path / folder
-        ref = by_path.get(base / name)
+        ref = by_path.get(unicodedata.normalize("NFC", str(base / name)))
         return f"{ref}.p{page}" if ref and page else ref or ""
 
     return find
@@ -559,7 +569,7 @@ def _resolve_links(line: str, find_page) -> str:
 
 
 def _load_notes(lecture: Lecture, number: int, find_page, find_segment) -> tuple[tuple[NoteLineView, ...], bool]:
-    anchors = [a for a in lecture.read_anchors() if a.get("text", "").strip()]
+    anchors = [a for a in lecture.read_anchors() if isinstance(a, dict) and str(a.get("text", "")).strip()]
     views: list[NoteLineView] = []
     figures = 0
     last_figure_rows: set[str] = set()
@@ -655,7 +665,8 @@ def load_subject(subject: Subject, professors: ProfessorStore | None = None, pag
     lectures = subject.lectures()
     numbers = {lecture.uid: registry.number("lectures", lecture.uid) for lecture in lectures}
     refs = {uid: f"L{number:02d}" for uid, number in numbers.items()}
-    documents = _load_documents(subject, [(lecture, refs[lecture.uid]) for lecture in lectures], registry, pages)
+    problems: list[str] = []
+    documents = _load_documents(subject, [(lecture, refs[lecture.uid]) for lecture in lectures], registry, pages, problems)
     store = professors or ProfessorStore()
     professor_views = _load_professors(subject, lectures, refs, store, registry)
     professor_refs = {p.profile.id: p.ref for p in professor_views}
@@ -670,9 +681,13 @@ def load_subject(subject: Subject, professors: ProfessorStore | None = None, pag
         notes: tuple[NoteLineView, ...] = ()
         own_notes = False
         if recordings:
-            recording_views = tuple(
-                _load_recording(lecture, path, audio.get(path.stem), registry, find_page) for path in lecture.transcripts()
-            )
+            loaded = []
+            for path in lecture.transcripts():
+                try:
+                    loaded.append(_load_recording(lecture, path, audio.get(path.stem), registry, find_page))
+                except Exception as exc:  # one bad file must not hide the subject
+                    problems.append(f"{path.name} in {lecture.name} could not be read: {exc}")
+            recording_views = tuple(loaded)
             notes, own_notes = _load_notes(lecture, numbers[lecture.uid], find_page, _line_finder(recording_views))
         transcribed = {path.stem for path in lecture.transcripts()}
         lecture_views.append(
@@ -703,14 +718,26 @@ def load_subject(subject: Subject, professors: ProfessorStore | None = None, pag
         lectures=tuple(lecture_views),
         documents=documents,
         deadlines=_deadlines(subject),
+        problems=problems,
     )
 
 
 def best_pages(document: Document, subject: Subject) -> list[tuple[int, str]]:
-    """``(page, best text)`` of one PDF: the search index does not need the rest."""
-    key, _ = document_key(document.path)
+    """``(page, best text)`` of one PDF: the search index does not need the rest. A conversion
+    that failed its check against the PDF gives way to the PDF's own text."""
+    try:
+        key, _ = document_key(document.path)
+        texts = pdf_tools.page_texts(document.path)
+    except Exception:  # load_subject reports it
+        return []
     converted = pdf_conversion.load_pages(subject, key)
-    return [(n, converted.get(n) or text) for n, text in enumerate(pdf_tools.page_texts(document.path), start=1)]
+    common = pdf_conversion.common_numbers(texts)
+    pages = []
+    for number, text in enumerate(texts, start=1):
+        markdown = converted.get(number, "")
+        good = markdown and pdf_conversion.check_page(text, markdown, number, common).ok
+        pages.append((number, markdown if good else text))
+    return pages
 
 
 def locate(view: SubjectView, source: dict) -> dict | None:
