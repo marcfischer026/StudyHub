@@ -41,6 +41,7 @@ class FakeApi:
         self.replies = list(replies)
         self.requests: list[dict] = []
         self.headers: list[dict] = []
+        self.gets = 0
         api = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -55,6 +56,7 @@ class FakeApi:
                 self.wfile.write(data)
 
             def do_GET(self):
+                api.gets += 1
                 self._send(200, {"data": [{"id": "model-b"}, {"id": "model-a"}]})
 
             def do_POST(self):
@@ -62,6 +64,15 @@ class FakeApi:
                 api.requests.append(body)
                 api.headers.append(dict(self.headers))
                 reply = api.replies.pop(0)
+                if reply == "redirect":
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if reply == "echo":
+                    self._send(401, {"error": f"Invalid key {KEY}"})
+                    return
                 if isinstance(reply, int):
                     self._send(reply, {"error": "nope"})
                     return
@@ -291,6 +302,21 @@ class SettingsTests(Fixture):
         panel = ClaudePanel(self.professors, settings=Settings(api_url="https://a.example/v1", api_model="m"))
         panel._start_api("x", lambda client: self.fail("must not run"))
         self.assertIn("No API key", panel.api_report.text())
+
+
+class SafetyTests(Fixture):
+    def test_a_redirect_is_not_followed(self):
+        api = self.api(["redirect"])
+        with self.assertRaises(api_mode.ApiError) as caught:
+            api.client.chat([{"role": "user", "content": "Hallo"}])
+        self.assertIn("302", str(caught.exception))
+        self.assertEqual(api.gets, 0)
+
+    def test_an_error_never_shows_the_key(self):
+        api = self.api(["echo"])
+        with self.assertRaises(api_mode.ApiError) as caught:
+            api.client.chat([{"role": "user", "content": "Hallo"}])
+        self.assertNotIn(KEY, str(caught.exception))
 
 
 if __name__ == "__main__":

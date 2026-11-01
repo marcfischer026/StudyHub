@@ -221,6 +221,15 @@ class RecordingTests(Fixture):
         self.assertTrue(new.segments[0].private)
 
 
+class SpeakerResultTests(unittest.TestCase):
+    def test_a_label_set_during_speaker_recognition_survives(self):
+        recognised = Transcript("a.wav", [Segment(0, 4, "Hallo", speaker="lecturer", loudness=0.5)])
+        now = Transcript("a.wav", [Segment(0, 4, "Hallo", category="off_topic", source="manual")])
+        now.take_speakers(recognised)
+        self.assertEqual((now.segments[0].speaker, now.segments[0].loudness), ("lecturer", 0.5))
+        self.assertEqual((now.segments[0].category, now.segments[0].source), ("off_topic", "manual"))
+
+
 class RegistryRecoveryTests(Fixture):
     def setUp(self):
         super().setUp()

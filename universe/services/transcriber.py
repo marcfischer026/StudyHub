@@ -91,6 +91,14 @@ class Transcript:
                 target.category, target.exam, target.note, target.source = seg.category, seg.exam, seg.note, seg.source
                 target.speaker = seg.speaker or target.speaker
 
+    def take_speakers(self, other: "Transcript") -> None:
+        """Speaker recognition takes minutes, and the student may have labelled lines meanwhile:
+        its result goes onto the file as it is now."""
+        found = {(s.start, s.end): s for s in other.segments}
+        for seg in self.segments:
+            if match := found.get((seg.start, seg.end)):
+                seg.speaker, seg.loudness = match.speaker, match.loudness
+
     @property
     def text(self) -> str:
         return " ".join(s.text for s in self.segments)

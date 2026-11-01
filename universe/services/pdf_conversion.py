@@ -179,9 +179,12 @@ def parse_converted(text: str) -> tuple[list[tuple[int, int, str]], str]:
 # --- stored conversions ------------------------------------------------------
 
 
+FILE_STEM_CHARS = 120  # a file name may have 255 bytes, an umlaut takes two, and ids and parts come on top
+
+
 def _file_stem(name: str) -> str:
     """Readable and safe; macOS hands out decomposed umlauts, which would turn into dashes."""
-    return re.sub(r"[^\w .()-]+", "-", unicodedata.normalize("NFC", name)).strip()
+    return re.sub(r"[^\w .()-]+", "-", unicodedata.normalize("NFC", name)).strip()[:FILE_STEM_CHARS].strip()
 
 
 def converted_path(subject: Subject, key: str) -> Path | None:

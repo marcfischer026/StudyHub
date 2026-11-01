@@ -119,7 +119,20 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _set_aside_if_broken(path: Path) -> None:
+    """A file that no longer parses may still be repaired by hand: the next write must not wipe it."""
+    try:
+        raw = path.read_bytes()
+        if raw.strip():
+            json.loads(raw)
+    except OSError:
+        pass
+    except ValueError:
+        path.replace(path.with_name(f"{path.stem}.broken-{datetime.now():%Y%m%d-%H%M%S}{path.suffix}"))
+
+
 def write_json(path: Path, data: dict) -> None:
+    _set_aside_if_broken(path)
     atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
@@ -343,7 +356,7 @@ class Lecture:
     def rename_audio(self, audio: Path, new_stem: str) -> Path:
         """Rename a recording together with its transcripts."""
         target = audio.with_name(new_stem + audio.suffix)
-        if target.exists():
+        if target.exists() or (self.dir("transcripts") / f"{new_stem}.json").exists():
             raise FileExistsError(f"{target.name} already exists.")
         audio.rename(target)
         for old, new in zip(_sidecars(audio), _sidecars(target)):
@@ -428,10 +441,12 @@ class Lecture:
 
 
 def import_file(source: Path, folder: Path) -> Path:
-    """Copy ``source`` into ``folder``, adding " (1)", " (2)"… if the name is taken."""
+    """Copy ``source`` into ``folder``, adding " (1)", " (2)"… if the name is taken. A stem counts
+    as taken whatever its suffix: a recording's transcript goes by the stem alone."""
     target = folder / source.name
     stem, suffix, n = target.stem, target.suffix, 1
-    while target.exists():
+    taken = {path.stem for path in folder.iterdir()}
+    while target.stem in taken:
         target = target.with_name(f"{stem} ({n}){suffix}")
         n += 1
     shutil.copy2(source, target)

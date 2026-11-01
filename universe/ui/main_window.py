@@ -714,6 +714,9 @@ class MainWindow(QMainWindow):
                 transcript = transcriber.Transcript.load(path)
                 audio = lecture.dir("audio") / transcript.audio
                 found_speakers = transcriber.identify_speakers_in(transcript, audio, self.settings, control)
+                if found_speakers:
+                    recognised, transcript = transcript, transcriber.Transcript.load(path)
+                    transcript.take_speakers(recognised)
                 if relevance.apply_exam_cues(transcript) or found_speakers:
                     transcript.save(path.parent)
 

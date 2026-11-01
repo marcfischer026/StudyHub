@@ -859,7 +859,7 @@ class ClaudePanel(ScopedPanel):
         if subject is None or not StudyStore(subject).knowledge().objectives:
             self.status.emit("Available once a reply is imported.")
             return
-        if not self._confirm_api(f"your progress and weak spots in {subject.name}"):
+        if not self._confirm_api(f"your progress in {subject.name}, with the slide pages and transcript excerpts of your weak spots"):
             return
 
         def job(client: api_mode.ApiClient):

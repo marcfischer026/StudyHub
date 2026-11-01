@@ -1017,6 +1017,13 @@ class MainWindowTests(Base):
         viewer._set_page_indicator(2)
         self.assertEqual(seen, [2])
 
+    def test_the_page_open_at_the_start_goes_on_file_even_without_a_turn(self):
+        recorder = self.start_recording()
+        self.window.audio.start_slide_marks("slides", "VL.pdf", 4)
+        with mock.patch.object(recorder, "stop", return_value=recorder.path):
+            self.window.audio.stop_recording()
+        self.assertEqual([m["page"] for m in read_slide_marks(recorder.path)], [4])
+
     def test_no_marks_without_recording_or_while_another_lecture_is_open(self):
         path = self.lecture.new_recording_path()
         self.window.audio.mark_slide("slides", "VL.pdf", 2)

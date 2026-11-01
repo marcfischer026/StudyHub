@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("UNIVERSE_DATA_DIR", tempfile.mkdtemp())
 
 from tests.test_claude_reply import HEAD, MC, OBJECTIVE, PASSIV, TOPIC, Fixture as ReplyFixture, jsonl  # noqa: E402
-from universe.services import practice  # noqa: E402
+from universe.services import claude_export, practice  # noqa: E402
 from universe.services.claude_reply import check_reply, parse_reply  # noqa: E402
 from universe.services.study_store import Knowledge, MergeSummary, StudyStore  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
@@ -456,6 +456,56 @@ class UndoLabelTests(Fixture):
         segments = self.transcript().segments
         self.assertEqual(segments[0].category, "")
         self.assertEqual(segments[2].category, "off_topic")
+
+
+class PrivateSinceTests(Fixture):
+    """A line the student marks private after Claude worked from it."""
+
+    def setUp(self):
+        super().setUp()
+        line = self.transcript().segments[2].text
+        source = [{"id": "R01@948", "q": line}]
+        self.merge(
+            TOPIC,
+            {**OBJECTIVE, "id": "L01-o009", "statement": "GEHEIM erklären", "truth": "lecture", "src": source},
+            {**MC, "id": "q_9", "objective": "L01-o009", "stem": "Was war GEHEIM?", "src": source},
+        )
+        self.store.record_attempt(self.store.knowledge().questions["q_9"], "A", 0.0, "sure", 0, 0, "today", "self")
+        transcript = self.transcript()
+        transcript.segments[2].category, transcript.segments[2].source = "off_topic", "manual"
+        transcript.save(self.lecture.dir("transcripts"))
+        self.view = self.load()
+
+    def test_it_stays_out_of_every_prompt(self):
+        knowledge, events = self.store.knowledge(), self.store.events()
+        self.assertNotIn("GEHEIM", claude_export.render_current_knowledge(claude_export._outgoing(self.view, knowledge), self.view))
+        for prompt in (claude_export.tutor_questions_prompt, claude_export.tutor_session_prompt):
+            self.assertNotIn("GEHEIM", prompt(self.view, knowledge, events))
+
+    def test_it_stays_out_of_every_file(self):
+        plan = claude_export.plan_export(self.view, self.store.knowledge(), scope="all", budget=claude_export.LONG_BUDGET)
+        result = claude_export.write_export(self.view, plan, self.store.knowledge(), self.store.events())
+        for path in result.folder.rglob("*.md"):
+            self.assertNotIn("GEHEIM", path.read_text(encoding="utf-8"), path.name)
+
+    def test_it_stays_in_the_app(self):
+        self.assertIn("q_9", self.store.knowledge().questions)
+
+
+class BrokenFileTests(Fixture):
+    def test_a_broken_knowledge_file_is_kept_and_the_step_before_used(self):
+        self.merge(*BASE)
+        self.merge({**TOPIC, "title": "Anders"})
+        self.store.path.write_text("kaputt", encoding="utf-8")
+        self.store = StudyStore(self.subject)
+        self.assertEqual(self.store.knowledge().topics["t_b"]["title"], "Bilanz")
+        self.merge({**TOPIC, "title": "Neu"})
+        self.assertEqual(self.store.knowledge().topics["t_b"]["title"], "Neu")
+        self.assertIn("q_1", self.store.knowledge().questions)
+        kept = list(self.store.folder.glob("knowledge.broken-*.json"))
+        self.assertEqual([p.read_text(encoding="utf-8") for p in kept], ["kaputt"])
+        self.assertTrue(self.store.undo_last_import())
+        self.assertEqual(self.store.knowledge().topics["t_b"]["title"], "Bilanz")
 
 
 class CoverageTests(Fixture):

@@ -18,7 +18,7 @@ import re
 import shutil
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -858,7 +858,30 @@ def _as_documents(files: list[tuple[str, str]]) -> str:
     return "<documents>\n" + "\n".join(items) + "\n</documents>"
 
 
+def _from_private_line(view: SubjectView, sources: list) -> bool:
+    for source in sources:
+        found = view.recording(source.get("rec", "")) if source.get("kind") == "line" else None
+        if found:
+            start = float(source.get("t") or 0.0)
+            end = float(source.get("end") or start)
+            if any(s.visibility == "private" and s.start <= end and start <= s.end for s in found[1].segments):
+                return True
+    return False
+
+
+def _outgoing(view: SubjectView, knowledge):
+    """Knowledge without what Claude wrote from a line the student has marked private since: it may
+    hold its words. It stays in the app; it just does not go out again."""
+    withheld = {
+        "objectives": {k: o for k, o in _part(knowledge, "objectives").items() if not _from_private_line(view, o.get("sources") or [])},
+        "questions": {k: q for k, q in _part(knowledge, "questions").items() if not _from_private_line(view, q.get("sources") or [])},
+        "conflicts": {k: c for k, c in _part(knowledge, "conflicts").items() if not _from_private_line(view, [c.get("a") or {}, c.get("b") or {}])},
+    }
+    return {**knowledge, **withheld} if isinstance(knowledge, dict) else replace(knowledge, **withheld)
+
+
 def write_export(view: SubjectView, plan: ExportPlan, knowledge, events: list[dict], now: datetime | None = None) -> ExportResult:
+    knowledge = _outgoing(view, knowledge)
     now = now or datetime.now()
     export_id = f"x{now:%Y%m%d-%H%M}-{uuid.uuid4().hex[:4]}"
     folder = _new_folder(view, plan, now)
@@ -1015,6 +1038,7 @@ def _weak_sources(view: SubjectView, knowledge, cards: dict, now: datetime, room
 
 
 def _tutor_prompt(view: SubjectView, knowledge, events: list[dict], now: datetime | None, task: str, kinds: tuple[str, ...]) -> str:
+    knowledge = _outgoing(view, knowledge)
     now = now or datetime.now()
     cards = practice.replay(knowledge, events, _exam_date(view))
     brief = practice.progress_brief(knowledge, events, cards, now, view.exam)

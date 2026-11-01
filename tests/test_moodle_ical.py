@@ -90,6 +90,10 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             moodle_ical.fetch("ftp://example.com/cal.ics")
 
+    def test_fetch_never_sends_the_token_unencrypted(self):
+        with self.assertRaises(ValueError):
+            moodle_ical.fetch("http://example.com/cal.ics?authtoken=x")
+
 
 class StartPageTests(unittest.TestCase):
     def test_deadlines_follow_the_selected_subject(self):

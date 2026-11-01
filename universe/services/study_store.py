@@ -192,7 +192,10 @@ class StudyStore:
         except OSError:
             stamp = None
         if self._cached is None or stamp != self._stamp:
-            self._cached = Knowledge.from_dict(read_json(self.path))
+            raw = read_json(self.path)
+            if self.path.exists() and not (raw and isinstance(raw, dict)):  # broken: write_json sets it aside on the next save
+                raw = read_json(self.prev_path)
+            self._cached = Knowledge.from_dict(raw if isinstance(raw, dict) else {})
             self._stamp = stamp
         return self._cached
 
@@ -261,10 +264,7 @@ class StudyStore:
         old.pop("updated"), new.pop("updated")
         if old == new:
             return False
-        if self.path.exists():
-            atomic_write_text(self.prev_path, self.path.read_text(encoding="utf-8"))
-        else:
-            write_json(self.prev_path, asdict(Knowledge()))
+        write_json(self.prev_path, asdict(before))
         self._save(after)
         return True
 

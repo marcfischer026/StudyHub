@@ -40,7 +40,7 @@ def fetch(url: str, timeout: float = 20) -> str:
     url = url.strip()
     if url.startswith("webcal://"):
         url = "https://" + url.removeprefix("webcal://")
-    if not url.startswith(("https://", "http://")):
+    if not url.startswith("https://"):  # it holds a personal token
         raise ValueError("The calendar URL must start with https://")
     request = urllib.request.Request(url, headers={"User-Agent": "UniVerse"})
     try:

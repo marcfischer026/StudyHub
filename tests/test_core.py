@@ -24,7 +24,7 @@ from universe.services.claude_reply import check_reply, parse_reply  # noqa: E40
 from universe.services.study_store import Knowledge, StudyStore  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
 from universe.services.vector_index import HashingEmbedder, SubjectIndex, lecture_chunks, subject_chunks  # noqa: E402
-from universe.storage import Workspace, clock_time, pauses, read_timeline, safe_name, write_timeline  # noqa: E402
+from universe.storage import Workspace, clock_time, import_file, write_json, pauses, read_timeline, safe_name, write_timeline  # noqa: E402
 
 REPLY = (
     {"t": "topic", "id": "t_irr", "title": "IRR", "lectures": ["L01"], "importance": 3, "why": "Repeated twice."},
@@ -55,6 +55,25 @@ class StorageTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.ws = Workspace(self.root)
+
+    def test_a_file_that_no_longer_parses_is_kept_when_written_over(self):
+        path = self.root / "tags.json"
+        path.write_text("kaputt", encoding="utf-8")
+        write_json(path, {"a": 1})
+        self.assertIn('"a": 1', path.read_text(encoding="utf-8"))
+        self.assertEqual([p.read_text(encoding="utf-8") for p in self.root.glob("tags.broken-*.json")], ["kaputt"])
+        write_json(path, {"a": 2})
+        self.assertEqual(len(list(self.root.glob("tags.broken-*.json"))), 1)
+
+    def test_a_stem_is_taken_whatever_its_suffix(self):
+        # A recording's transcript goes by the stem alone, so song.mp3 must not share song.wav's.
+        source = self.root / "from" / "song.mp3"
+        source.parent.mkdir()
+        source.write_bytes(b"x")
+        folder = self.root / "audio"
+        folder.mkdir()
+        (folder / "song.wav").write_bytes(b"y")
+        self.assertEqual(import_file(source, folder).name, "song (1).mp3")
 
     def test_create_subject_and_lecture_layout(self):
         subject = self.ws.create_subject("Corporate Finance")

@@ -65,6 +65,16 @@ class Answer:
     finish_reason: str
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would take the key, and with some codes the material, to another host."""
+
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
 @dataclass
 class ApiClient:
     url: str
@@ -80,11 +90,11 @@ class ApiClient:
             if self.stop.is_set():
                 raise Cancelled()
             try:
-                with urllib.request.urlopen(request, timeout=timeout) as response:
+                with _opener.open(request, timeout=timeout) as response:
                     return json.load(response)
             except urllib.error.HTTPError as exc:
                 with exc:
-                    detail = exc.read().decode("utf-8", "replace")[:300].strip()
+                    detail = exc.read().decode("utf-8", "replace")[:300].strip().replace(self.key, "***")
                 if exc.code not in RETRY_STATUS or attempt == RETRIES:
                     raise ApiError(f"The API answered {exc.code}: {detail}") from None
             except (OSError, ValueError) as exc:

@@ -176,6 +176,8 @@ class AudioController(QObject):
         self.recordingChanged.emit(False)
         if path is None or not path.exists():
             return
+        if len(self._slide_marks) == 1:  # no page was turned, so the page open at the start is not on file yet
+            write_slide_marks(path, self._slide_marks)
         if lecture is not None and self.lecture is not None and lecture.path == self.lecture.path:
             self.filesChanged.emit()
             self.select(path)
