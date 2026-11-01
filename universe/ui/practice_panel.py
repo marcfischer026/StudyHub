@@ -341,10 +341,10 @@ class PracticePanel(ScopedPanel):
             self.options.addWidget(choice)
             self.choices.append(choice)
         self.answer_line.clear()
-        self.answer_line.setEnabled(True)
+        self.answer_line.setReadOnly(False)
         self.answer_line.setVisible(kind == "calc")
         self.answer_text.clear()
-        self.answer_text.setEnabled(True)
+        self.answer_text.setReadOnly(False)
         self.answer_text.setVisible(kind in ("short", "case"))
         self.hint_label.clear()
         self.hint_label.hide()
@@ -417,8 +417,8 @@ class PracticePanel(ScopedPanel):
     def reveal(self) -> None:
         """The model answer, and how to grade against it: rubric points, or three plain buttons."""
         question = self.question
-        self.answer_text.setEnabled(False)
-        self.answer_line.setEnabled(False)
+        self.answer_text.setReadOnly(True)
+        self.answer_line.setReadOnly(True)
         self._set_visible(self.hint_btn, self.confidence_title, self.confidence_row, self.save_free_btn, self.feedback, on=False)
         self.model_answer.setText(f"<b>Model answer</b><br>{_text(right_answer(question))}{self._details(question)}")
         self.model_answer.show()
@@ -498,8 +498,8 @@ class PracticePanel(ScopedPanel):
         self._set_visible(self.hint_btn, self.confidence_title, self.confidence_row, on=False)
         for choice in self.choices:
             choice.setEnabled(False)
-        self.answer_line.setEnabled(False)
-        self.answer_text.setEnabled(False)
+        self.answer_line.setReadOnly(True)
+        self.answer_text.setReadOnly(True)
         self.feedback.setText(self._verdict(question, answer, score) + self._details(question))
         self.feedback.show()
         self.next_btn.setText("Next" if self.position + 1 < len(self.session) else "Finish")
