@@ -95,6 +95,7 @@ class Sidebar(QWidget):
     aboutToChange = Signal()  # before a rename/delete moves files on disk
     subjectChanged = Signal(object)  # Subject metadata edited (e.g. abbreviation)
     recordingsDropped = Signal(list, object)  # list[Path], target Lecture
+    examDateRequested = Signal(object)  # Subject
 
     def __init__(self, workspace: Workspace, parent=None):
         super().__init__(parent)
@@ -260,6 +261,7 @@ class Sidebar(QWidget):
             menu.addAction("Rename…", lambda: self._rename(obj))
             if isinstance(obj, Subject):
                 menu.addAction(f"Abbreviation ({obj.short_name})…", lambda: self._set_abbreviation(obj))
+                menu.addAction("Exam date…", lambda: self.examDateRequested.emit(obj))
             menu.addAction("Assign Professor…", lambda: self.assignProfessorRequested.emit(obj))
             menu.addAction("Reveal in Finder", lambda: subprocess.run(["open", str(obj.path)]))
             menu.addSeparator()

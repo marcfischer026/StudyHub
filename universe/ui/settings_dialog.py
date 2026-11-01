@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import LANGUAGES, Settings, data_root, installed_models
-from ..services import lmstudio, local_llm, moodle_ical
+from ..services import api_mode, lmstudio, local_llm, moodle_ical
 from ..services.audio_recorder import AudioRecorder
 from . import workers
 from .workers import Worker
@@ -63,11 +63,13 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self._worker: Worker | None = None
         self._moodle_worker: Worker | None = None
+        self._api_worker: Worker | None = None
 
         tabs = QTabWidget()
         tabs.addTab(self._transcription_tab(), "Transcription")
         tabs.addTab(self._recording_tab(), "Recording")
         tabs.addTab(self._local_ai_tab(), "Local AI")
+        tabs.addTab(self._api_tab(), "API")
         tabs.addTab(self._moodle_tab(), "Moodle")
         tabs.addTab(self._power_tab(), "Battery")
         tabs.addTab(self._general_tab(), "General")
@@ -164,6 +166,46 @@ class SettingsDialog(QDialog):
             (None, _hint("Minutes without AI work before UniVerse unloads the model it used.")),
         )
 
+    def _api_tab(self) -> QWidget:
+        s = self.settings
+        self.api_enabled = QCheckBox("Offer the Gemini and Claude steps through an API")
+        self.api_enabled.setChecked(s.api_enabled)
+        self.api_preset = QComboBox()
+        self.api_preset.addItem("Custom", None)
+        for name, url, model in api_mode.PRESETS:
+            self.api_preset.addItem(name, (url, model))
+        self.api_preset.setCurrentIndex(max(0, next((i for i in range(1, self.api_preset.count()) if self.api_preset.itemData(i)[0] == s.api_url), 0)))
+        self.api_preset.activated.connect(self._api_preset_chosen)
+        self.api_url = QLineEdit(s.api_url, placeholderText="https://…/v1")
+        self.api_key = QLineEdit(s.api_key, echoMode=QLineEdit.EchoMode.Password)
+        self.api_model = QComboBox(editable=True)
+        self.api_model.setCurrentText(s.api_model)
+
+        self.api_test_btn = QPushButton("Test connection", autoDefault=False)
+        self.api_test_btn.clicked.connect(self._test_api)
+        self.api_result = _hint("")
+        test_row = QHBoxLayout()
+        test_row.setContentsMargins(0, 0, 0, 0)
+        test_row.addWidget(self.api_test_btn)
+        test_row.addWidget(self.api_result, 1)
+        test = QWidget()
+        test.setLayout(test_row)
+        return _form(
+            (None, self.api_enabled),
+            ("Provider", self.api_preset),
+            ("Base URL", self.api_url),
+            ("API key", self.api_key),
+            ("Model", self.api_model),
+            (None, test),
+            (
+                None,
+                _hint(
+                    "Any OpenAI-compatible API. Each run asks first: it sends the subject's material and costs money. "
+                    f"The key is kept in settings.json, or set {api_mode.KEY_VARIABLE}."
+                ),
+            ),
+        )
+
     def _moodle_tab(self) -> QWidget:
         self.moodle_url = QLineEdit(
             self.settings.moodle_calendar_url,
@@ -255,6 +297,39 @@ class SettingsDialog(QDialog):
         self.test_result.setText(f"✗ {message}")
         self.test_btn.setEnabled(True)
 
+    def _api_preset_chosen(self, _index: int) -> None:
+        preset = self.api_preset.currentData()
+        if preset:
+            self.api_url.setText(preset[0])
+            self.api_model.clear()
+            self.api_model.setCurrentText(preset[1])
+
+    def _api_probe(self) -> Settings:
+        return dataclasses.replace(
+            self.settings, api_url=self.api_url.text().strip(), api_key=self.api_key.text().strip(), api_model=self.api_model.currentText().strip() or "-"
+        )
+
+    def _test_api(self) -> None:
+        self.api_test_btn.setEnabled(False)
+        self.api_result.setText("Asking the API for its models…")
+        self._api_worker = Worker(lambda settings: api_mode.client_from(settings).models(), self._api_probe())
+        self._api_worker.setAutoDelete(False)
+        self._api_worker.signals.finished.connect(self._api_found)
+        self._api_worker.signals.failed.connect(self._api_failed)
+        workers.run(self._api_worker)
+
+    def _api_found(self, models: list[str]) -> None:
+        chosen = self.api_model.currentText()
+        self.api_model.clear()
+        self.api_model.addItems(models)
+        self.api_model.setCurrentText(chosen)
+        self.api_result.setText(f"✓ {len(models)} model{'s' * (len(models) != 1)}")
+        self.api_test_btn.setEnabled(True)
+
+    def _api_failed(self, message: str) -> None:
+        self.api_result.setText(f"✗ {message}")
+        self.api_test_btn.setEnabled(True)
+
     def _test_moodle(self) -> None:
         self.moodle_test_btn.setEnabled(False)
         self.moodle_result.setText("Downloading calendar…")
@@ -285,6 +360,10 @@ class SettingsDialog(QDialog):
         s.local_llm_url = self.local_llm_url.text().strip()
         s.local_llm_model = self._model_value()
         s.local_llm_unload_after = self.unload_after.value() * 60
+        s.api_enabled = self.api_enabled.isChecked()
+        s.api_url = self.api_url.text().strip()
+        s.api_key = self.api_key.text().strip()
+        s.api_model = self.api_model.currentText().strip()
         s.moodle_calendar_url = self.moodle_url.text().strip()
         s.battery_pause_below = self.battery_pause_below.value()
         s.only_when_charging = self.only_when_charging.isChecked()

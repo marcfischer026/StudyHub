@@ -32,6 +32,7 @@ PREFERRED_MODELS = ("qwen3.5-9b", "qwen3-14b")
 # the reply after an empty think block stops the reasoning, which otherwise eats max_tokens.
 NO_THINK_PREFILL = {"role": "assistant", "content": "<think>\n\n</think>\n\n"}
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
+_JSON_START = re.compile(r"[\[{]")
 
 PROMPT = """You sort the transcript of a university lecture recording for the course "{subject}".
 The laptop microphone also caught students chatting next to it. Classify EVERY segment:
@@ -134,24 +135,21 @@ def _parse(text: str) -> list[dict]:
     ]
     if labels:
         return labels
-    from .claude_bridge import ResponseError, _extract_json
+    return [l for l in _json_labels(text) if isinstance(l, dict) and l.get("category", "lecture") in CATEGORIES]
 
-    data = None
-    bracket, brace = text.find("["), text.find("{")
-    if bracket != -1 and (brace == -1 or bracket < brace):
+
+def _json_labels(text: str) -> list:
+    """The first label list in a reply that may wrap it in fences or prose."""
+    decoder = json.JSONDecoder()
+    for start in _JSON_START.finditer(text):
         try:
-            data = json.JSONDecoder().raw_decode(text[bracket:])[0]
+            data = decoder.raw_decode(text, start.start())[0]
         except json.JSONDecodeError:
-            pass
-    if data is None:
-        try:
-            data = json.loads(_extract_json(text))
-        except (ResponseError, json.JSONDecodeError):
-            return []
-    found = data.get("labels", []) if isinstance(data, dict) else data
-    if not isinstance(found, list):
-        return []
-    return [l for l in found if isinstance(l, dict) and l.get("category", "lecture") in CATEGORIES]
+            continue  # "[Lecturer]" or "{x}" in the prose
+        found = data.get("labels") if isinstance(data, dict) else data
+        if found and isinstance(found, list):
+            return found
+    return []
 
 
 def classify(

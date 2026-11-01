@@ -18,7 +18,7 @@ os.environ.setdefault("UNIVERSE_DATA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from universe.config import Settings  # noqa: E402
-from universe.services import claude_bridge, local_llm, speakers, transcriber  # noqa: E402
+from universe.services import claude_export, local_llm, speakers, subject_model, transcriber  # noqa: E402
 from universe.services.jobcontrol import Cancelled  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
 from universe.storage import Workspace  # noqa: E402
@@ -179,9 +179,11 @@ class PromptTests(unittest.TestCase):
     def test_claude_export_carries_speaker_tags(self):
         lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Mathe").create_lecture("VL 1")
         tagged_transcript().save(lecture.dir("transcripts"))
-        text = claude_bridge.build_context(lecture, None)
-        self.assertIn("[Speaker 2, near mic] Hast du Zeit?", text)
-        self.assertIn("[Lecturer] Die Ableitung ist", text)
+        view = subject_model.load_subject(lecture.subject)
+        text = claude_export.render_lecture(view, view.lectures[0])
+        self.assertIn("⟨[Speaker 2, near mic]⟩\nR01@1 Hast du Zeit?", text)
+        self.assertRegex(text, r"⟨[^⟩]*\[Lecturer\]⟩\nR01@0 Die Ableitung ist")
+        self.assertIn("⟨[Speaker 2]⟩\nR01@3 Ja klar", text)
 
 
 class TranscriptPanelTests(unittest.TestCase):

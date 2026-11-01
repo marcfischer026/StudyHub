@@ -6,15 +6,15 @@ Three sources label transcript segments, from cheapest to smartest:
    applied right after transcription, offline and instant.
 2. **local** — a local LLM (LM Studio / any OpenAI-compatible server) sorts
    segments into lecture / question / answer / off_topic. See ``local_llm.py``.
-3. **claude** — the Claude round trip returns ``segment_labels``.
+3. **claude** — the Claude round trip returns ``label`` records (see ``study_store.py``).
 
-A segment labelled ``manual`` by the user is never overwritten. Off-topic
-segments are left out of the Claude export, the search index and training data.
+A segment labelled ``manual`` by the user is never overwritten. Off-topic segments are
+left out of the search index and training data; ``subject_model.py`` decides per segment
+what the Claude export does with them, by who labelled them.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -41,7 +41,7 @@ SEGMENT_ID = re.compile(r"S(\d+)\.(\d+)")
 
 
 def segment_id(transcript_no: int, index: int) -> str:
-    """Stable id used in exports and classifier prompts: transcript 1, segment 12 → "S1.12"."""
+    """Id used in classifier prompts, within one job: transcript 1, segment 12 → "S1.12"."""
     return f"S{transcript_no}.{index}"
 
 
@@ -94,12 +94,6 @@ def lecture_segment_map(lecture: Lecture) -> dict[str, tuple[Path, int]]:
     return mapping
 
 
-def save_segment_map(lecture: Lecture) -> None:
-    """Remember which id meant which segment at export time, for the import."""
-    mapping = {sid: [path.name, index] for sid, (path, index) in lecture_segment_map(lecture).items()}
-    (lecture.dir("ai") / "segment_ids.json").write_text(json.dumps(mapping), encoding="utf-8")
-
-
 def expand_ids(label: dict) -> list[str]:
     """Segment ids a label covers: {"id"} / {"from"} alone, or a {"from", "to"} range."""
     first = str(label.get("from") or label.get("id") or "")
@@ -117,13 +111,11 @@ def _expand(start_id: str, end_id: str | None) -> list[tuple[int, int]]:
     return [(t_no, i) for i in range(min(lo, hi), max(lo, hi) + 1)]
 
 
-def apply_labels(lecture: Lecture, labels: list[dict], source: str, segment_map: dict | None = None) -> int:
+def apply_labels(lecture: Lecture, labels: list[dict], source: str) -> int:
     """Apply ``[{"id"|"from", "to"?, "category"?, "exam"?, "reason"?}]`` to the lecture's
-    transcripts and save them. ``segment_map`` maps id → [file name, index]
-    (from export time); defaults to the current transcripts. Returns segments changed."""
+    current transcripts and save them. Returns segments changed."""
     folder = lecture.dir("transcripts")
-    if segment_map is None:
-        segment_map = {sid: [p.name, i] for sid, (p, i) in lecture_segment_map(lecture).items()}
+    segments = lecture_segment_map(lecture)
     loaded: dict[str, Transcript] = {}
     changed = 0
     for label in labels:
@@ -131,16 +123,11 @@ def apply_labels(lecture: Lecture, labels: list[dict], source: str, segment_map:
             continue
         first = str(label.get("from") or label.get("id") or "")
         for t_no, index in _expand(first, label.get("to")):
-            target = segment_map.get(segment_id(t_no, index))
+            target = segments.get(segment_id(t_no, index))
             if not target:
                 continue
-            name, seg_index = target
-            path = folder / name
-            if not path.exists():
-                continue
-            transcript = loaded.setdefault(name, Transcript.load(path))
-            if seg_index >= len(transcript.segments):
-                continue
+            path, seg_index = target
+            transcript = loaded.setdefault(path.name, Transcript.load(path))
             exam = label.get("exam")
             if apply_label(
                 transcript.segments[seg_index],
@@ -168,12 +155,12 @@ def summary(lecture: Lecture) -> dict[str, int]:
 
 def course_context(lecture: Lecture, limit: int = 1500) -> str:
     """Slide text excerpt so a classifier can tell course content from side talk."""
-    from . import pdf_tools
+    from .subject_model import best_pages
 
     text = []
-    for pdf in lecture.pdfs():
+    for document in lecture.documents():
         try:
-            text.extend(pdf_tools.page_texts(pdf))
+            text.extend(page for _, page in best_pages(document, lecture.subject))
         except Exception:  # unreadable PDF: classify without it
             continue
         if sum(len(t) for t in text) > limit:

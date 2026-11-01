@@ -26,18 +26,21 @@ from PySide6.QtWidgets import (
 from ..config import Settings
 from ..professors import ProfessorStore
 from ..services import local_llm, moodle_ical, relevance, transcriber
+from ..services.subject_model import load_subject, locate
 from ..services.vector_index import SubjectIndex, get_embedder
 from ..storage import Lecture, Subject, Workspace, clock_time
 from . import workers
 from .ai_panel import AIPanel, hit_target
 from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, open_mic_privacy_settings
+from .claude_panel import study_pool
 from .documents_panel import DocumentsPanel
 from .note_editor import NoteEditor
 from .professor_dialog import AssignProfessorDialog, ProfessorManager
+from .progress_panel import ExamDialog
 from .settings_dialog import SettingsDialog
 from .sidebar import Sidebar
 from .transcript_panel import TranscriptPanel
-from .jobs import ActivityIndicator, JobManager
+from .jobs import ActivityIndicator, JobManager, poll_pool
 from .welcome import LectureView, WelcomePage
 from .workers import Worker
 
@@ -54,6 +57,7 @@ class MainWindow(QMainWindow):
         self.lecture: Lecture | None = None
         self.subject: Subject | None = None
         self._keep_alive: set[Worker] = set()
+        self._events: list[moodle_ical.Event] = []
         self._ready = False
 
         self.setWindowTitle("UniVerse")
@@ -86,7 +90,7 @@ class MainWindow(QMainWindow):
         self.documents.viewer.figureClipped.connect(self._add_figure)
         self.documents.viewer.linkRequested.connect(self._link_page)
         self.transcript = TranscriptPanel()
-        self.ai = AIPanel(self.professors)
+        self.ai = AIPanel(self.professors, settings=self.settings)
         self.recordings = RecordingsPanel(
             self.audio,
             ensure_lecture=self.ensure_lecture,
@@ -120,7 +124,7 @@ class MainWindow(QMainWindow):
         self.sidebar.select_by_name(settings.last_subject, settings.last_lecture)
         QTimer.singleShot(0, lambda: setattr(self, "_ready", True))
         if settings.moodle_calendar_url:
-            self.welcome.set_events(moodle_ical.parse(moodle_ical.cached()))  # until the download below is done
+            self._set_events(moodle_ical.parse(moodle_ical.cached()))  # until the download below is done
         self.refresh_moodle()
         self._moodle_timer = QTimer(self, interval=60 * 60 * 1000)  # Moodle's export changes rarely
         self._moodle_timer.timeout.connect(self.refresh_moodle)
@@ -151,13 +155,14 @@ class MainWindow(QMainWindow):
         stamp.clicked.connect(self.notes.insert_timestamp)
         export = QPushButton("⇪  Export for Claude")
         export.setObjectName("primaryButton")
-        export.setToolTip("Build Context.md for this lecture and copy it to the clipboard (⌘E)")
+        export.setToolTip("Write this subject as .md files for Claude, with the prompt on the clipboard (⌘E)")
         export.clicked.connect(self._export_for_claude)
         import_btn = QPushButton("⇩  Import reply")
-        import_btn.setToolTip("Paste Claude's JSON answer")
+        import_btn.setToolTip("Bring Claude's reply back in")
         import_btn.clicked.connect(self._focus_import)
-        self.lecture_buttons = (stamp, export, import_btn)
-        for button in self.lecture_buttons:
+        self.lecture_buttons = (stamp,)
+        self.subject_buttons = (export, import_btn)  # work with no lecture open
+        for button in (*self.lecture_buttons, *self.subject_buttons):
             bar.addWidget(button)
 
         # Closed panels come back from here (same menu as View in the menu bar).
@@ -266,7 +271,7 @@ class MainWindow(QMainWindow):
 
         ai_menu = bar.addMenu("A&I")
         add(ai_menu, "Export for Claude", self._export_for_claude, "Ctrl+E")
-        add(ai_menu, "Import AI Response", self._focus_import)
+        add(ai_menu, "Import Claude's Reply", self._focus_import)
 
         tools = bar.addMenu("&Tools")
         add(tools, "Rebuild Search Index (Subject)", self._rebuild_index)
@@ -283,6 +288,7 @@ class MainWindow(QMainWindow):
         self.sidebar.lectureDeleted.connect(self._lecture_deleted)
         self.sidebar.lectureRenamed.connect(self._lecture_renamed)
         self.sidebar.subjectChanged.connect(lambda _s: self.lecture and self.lecture_view.show_lecture(self.lecture))
+        self.sidebar.examDateRequested.connect(self._edit_exam)
 
         self.welcome.createSubject.connect(self.sidebar.new_subject)
         self.welcome.createLecture.connect(self.sidebar.new_lecture)
@@ -308,11 +314,15 @@ class MainWindow(QMainWindow):
         self.transcript.seekRequested.connect(self._seek_audio)
         self.transcript.labelsChanged.connect(self.schedule_index)
         self.transcript.classifyRequested.connect(self.classify)
-        self.documents.pdfImported.connect(lambda _p: self.lecture and self.schedule_index(self.lecture))
+        self.documents.pdfImported.connect(self._on_pdf_imported)
+        self.documents.viewer.pageChanged.connect(self._on_page_turned)
 
         self.ai.searchRequested.connect(self.search)
         self.ai.hitActivated.connect(self._open_hit)
-        self.ai.responseImported.connect(self._on_response_imported)
+        self.ai.sourceActivated.connect(self._jump_to_source)
+        self.ai.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
+        self.ai.replyImported.connect(self._on_reply_imported)
+        self.ai.conversionsImported.connect(self._reindex_subject)
 
     # --- lecture switching --------------------------------------------------
 
@@ -334,9 +344,11 @@ class MainWindow(QMainWindow):
         self.documents.set_scope(self.subject, lecture)
         self.audio.set_lecture(lecture)
         self.transcript.set_lecture(lecture)
-        self.ai.set_lecture(lecture)
+        self.ai.set_scope(self.subject, lecture)
         for button in self.lecture_buttons:
             button.setEnabled(lecture is not None)
+        for button in self.subject_buttons:
+            button.setEnabled(self.subject is not None)
         where = f"{lecture.subject.name} › {lecture.name}" if lecture else (self.subject.name if self.subject else "")
         self.setWindowTitle(f"UniVerse — {where}" if where else "UniVerse")
 
@@ -517,6 +529,9 @@ class MainWindow(QMainWindow):
         if recording:
             self.statusBar().showMessage("Recording… ⌘T adds a timestamp to your notes.")
             self.notes.edit.setFocus()
+            document, shown = self.documents.current_document(), self.documents.viewer.current()
+            if document and shown:
+                self.audio.start_slide_marks(document.folder, document.path.name, shown[1])
 
     def _on_recording_finished(self, path: Path) -> None:
         self.statusBar().showMessage(f"Saved {path.name}.", 6000)
@@ -541,6 +556,11 @@ class MainWindow(QMainWindow):
             types = document.types
             context.update(doc=document.folder, pdf=document.path.name, page=viewer.current()[1], type=types[0] if types else "")
         return context
+
+    def _on_page_turned(self, page: int) -> None:
+        document = self.documents.current_document()
+        if document is not None:
+            self.audio.mark_slide(document.folder, document.path.name, page)
 
     def _add_figure(self, data: dict) -> None:
         """A snip from the PDF viewer: store it with the lecture and put it into the notes."""
@@ -582,6 +602,54 @@ class MainWindow(QMainWindow):
             return
         self.audio.seek(seconds)
 
+    def _still_recording(self, target: Lecture) -> bool:
+        """A jump must not take the notes away in the middle of a recording."""
+        if not self.audio.recording or self._is_open(target):
+            return False
+        self.statusBar().showMessage(f"Still recording: this is in “{target.name}”. Your open lecture stays; look it up after you stop.", 8000)
+        return True
+
+    def _jump_to_source(self, source: dict) -> None:
+        """A stored source, from a guide, a question or the documents list, to the page or moment it means."""
+        subject = self.subject
+        if subject is None:
+            return
+        if source.get("kind") in ("own", "prof"):
+            self.statusBar().showMessage(f"{source.get('label')} is not in your material: nothing to open.", 6000)
+            return
+        view = load_subject(subject, self.professors, pages=False)
+        target = locate(view, source)
+        if target is None and source.get("kind") == "figure":
+            lecture = view.lecture(source.get("lecture", ""))
+            target = {"lecture": lecture.lecture} if lecture else None
+        if target is None:
+            self.statusBar().showMessage(f"{source.get('label') or 'That source'} is no longer there.", 6000)
+            return
+        if "pdf" in target:
+            document = view.document(source.get("doc", ""))
+            listed = {d.path: d for d in self.documents.documents}
+            here = next((listed[o.path] for o in document.occurrences if o.path in listed), None) if document else None
+            if here is not None:  # also a deck shared with the open lecture: no reason to leave it
+                self._open_document_page(here.folder, here.path.name, target["page"], source.get("label", ""))
+                return
+        lecture = target.get("lecture")
+        if lecture is not None and not self._is_open(lecture):
+            if self._still_recording(lecture):
+                return
+            self.sidebar.refresh(select=lecture)  # opens it via lectureSelected
+        if "audio" in target:
+            self._seek_audio(target["audio"], target["t"])
+        elif "pdf" in target:
+            self._open_document_page(target["doc"], target["pdf"], target["page"], source.get("label", ""))
+        else:
+            self.notes_action.setChecked(True)
+
+    def _open_document_page(self, folder: str, pdf: str, page: int, label: str = "") -> None:
+        self.docks["documents"].show()
+        self.docks["documents"].raise_()
+        if not self.documents.open_page(folder, pdf, page):
+            self.statusBar().showMessage(f"{label or pdf} is not in this lecture's documents.", 6000)
+
     def transcribe(self, audio_path: Path) -> None:
         """Queue a whisper.cpp transcription (see the activity indicator, bottom right)."""
         problems = transcriber.check_setup(self.settings)
@@ -599,11 +667,19 @@ class MainWindow(QMainWindow):
                 audio_path, self.settings, progress=progress, language=language, prompt=prompt, control=control
             )
             relevance.apply_exam_cues(result)  # stage 1: instant, offline
-            result.save(lecture.dir("transcripts"))
+            folder = lecture.dir("transcripts")
+            old = folder / f"{Path(result.audio).stem}.json"
+            if old.exists():  # transcribing again must not lose the recording's id or labels set by hand
+                try:
+                    result.carry_over(transcriber.Transcript.load(old))
+                except (OSError, ValueError, TypeError) as exc:
+                    print(f"Could not read the old transcript {old.name}: {exc}")
+            result.save(folder)
             return result
 
         def done(result):
             self.statusBar().showMessage(f"Transcribed {audio_path.name}: {len(result.segments)} segments.", 8000)
+            self.ai.refresh()
             if self._is_open(lecture):
                 self.transcript.refresh(select_stem=audio_path.stem)
                 self.recordings.refresh()
@@ -689,11 +765,29 @@ class MainWindow(QMainWindow):
     def _is_open(self, lecture: Lecture) -> bool:
         return self.lecture is not None and self.lecture.path == lecture.path
 
-    def _on_response_imported(self) -> None:
-        self.docks["ai"].raise_()
+    def _on_reply_imported(self) -> None:
+        """Claude's labels may reach any lecture of the subject."""
         if self.lecture is not None:
             self.transcript.refresh()
+        self._reindex_subject()
+        self._refresh_welcome()
+
+    def _on_pdf_imported(self, _path: Path) -> None:
+        if self.lecture is not None:
             self.schedule_index(self.lecture)
+        subject = self.subject
+        if subject is not None:  # past exams and tasks belong to no lecture
+            self._run_index(lambda: SubjectIndex(subject, self._embedder()).index_documents())
+        self.ai.refresh()
+
+    def _reindex_subject(self) -> None:
+        subject = self.subject
+        if subject is not None:
+            self._run_index(lambda: SubjectIndex(subject, self._embedder()).index_all())
+
+    def _refresh_welcome(self) -> None:
+        if self.lecture is None:
+            self.welcome.show_subject(self.subject)
 
     # --- search index -------------------------------------------------------
 
@@ -738,7 +832,10 @@ class MainWindow(QMainWindow):
     def _open_hit(self, hit) -> None:
         if hit is None or self.subject is None:
             return
-        if self.lecture is None or hit.lecture != self.lecture.name:
+        if hit.lecture and (self.lecture is None or hit.lecture != self.lecture.name):  # past exams and tasks have none
+            lecture = self.subject.lecture(hit.lecture)
+            if lecture is not None and self._still_recording(lecture):
+                return
             self.sidebar.select_by_name(self.subject.name, hit.lecture)
         target = hit_target(hit)
         if target is None:
@@ -764,7 +861,7 @@ class MainWindow(QMainWindow):
             self._refresh_professor()
 
     def _refresh_professor(self) -> None:
-        self.ai.refresh_professor()
+        self.ai.refresh()
         if self.lecture is not None:
             self.lecture_view.show_lecture(self.lecture)
 
@@ -775,17 +872,28 @@ class MainWindow(QMainWindow):
         self.documents.import_pdf()
 
     def _export_for_claude(self) -> None:
-        if self.lecture is None:
+        """With the choices on the Claude tab, whatever they are right now."""
+        if self.subject is None:
+            self.statusBar().showMessage("Pick a subject first.", 4000)
             return
+        self.docks["ai"].show()
         self.docks["ai"].raise_()
-        self.ai.tabs.setCurrentIndex(0)
-        self.ai.export_context()
-        self.statusBar().showMessage("Context.md copied — paste it into Claude, then bring the reply back with ⇩ Import reply.", 10000)
+        self.ai.show_export()
+        self.notes.save()
+        self.ai.claude.export()
 
     def _focus_import(self) -> None:
+        if self.subject is None:
+            self.statusBar().showMessage("Pick a subject first.", 4000)
+            return
+        self.docks["ai"].show()
         self.docks["ai"].raise_()
-        self.ai.tabs.setCurrentIndex(0)
-        self.ai.paste.setFocus()
+        self.ai.show_import()
+
+    def _edit_exam(self, subject: Subject) -> None:
+        ExamDialog(subject, self._events, self).exec()
+        self.ai.refresh()
+        self._refresh_welcome()
 
     def _reveal(self) -> None:
         target = self.lecture.path if self.lecture else self.subject.path if self.subject else self.workspace.root
@@ -799,9 +907,15 @@ class MainWindow(QMainWindow):
             self.record_controls._update_mic_tooltip()
             self.activity._apply_battery_rules()
             self.activity.refresh()
+            self.ai.claude.show_api_mode()
             if not self.settings.moodle_calendar_url:
-                self.welcome.set_events([])
+                self._set_events([])
             self.refresh_moodle()
+
+    def _set_events(self, events: list) -> None:
+        self._events = events
+        self.welcome.set_events(events)
+        self.ai.set_events(events)
 
     def refresh_moodle(self) -> None:
         url = self.settings.moodle_calendar_url
@@ -813,7 +927,7 @@ class MainWindow(QMainWindow):
 
         self._start(
             Worker(lambda: moodle_ical.parse(moodle_ical.fetch(url))),
-            on_done=self.welcome.set_events,
+            on_done=self._set_events,
             on_fail=failed,
         )
 
@@ -882,5 +996,7 @@ class MainWindow(QMainWindow):
         self.settings.last_subject = self.subject.name if self.subject else ""
         self.settings.last_lecture = self.lecture.name if self.lecture else ""
         self.settings.save()
+        study_pool.waitForDone(5000)
         workers.index_pool.waitForDone(5000)
+        poll_pool.waitForDone(5000)
         super().closeEvent(event)

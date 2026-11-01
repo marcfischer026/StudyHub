@@ -1,8 +1,7 @@
-"""Tests for the Qt-free core: storage, timestamps, Claude bridge, index."""
+"""Tests for the Qt-free core: storage, timestamps, the Claude round trip, index, training data."""
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -18,23 +17,38 @@ sys.path.insert(0, str(ROOT))
 _tmp = tempfile.TemporaryDirectory()
 os.environ["UNIVERSE_DATA_DIR"] = _tmp.name
 
+from tests.test_claude_reply import jsonl, make_pdf  # noqa: E402
 from universe.professors import ProfessorProfile, ProfessorStore  # noqa: E402
-from universe.services import audio_player, claude_bridge, timestamps  # noqa: E402
+from universe.services import audio_player, claude_export, claude_reply, pdf_conversion, relevance, subject_model, timestamps  # noqa: E402
+from universe.services.claude_reply import check_reply, parse_reply  # noqa: E402
+from universe.services.study_store import Knowledge, StudyStore  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
-from universe.services.vector_index import HashingEmbedder, SubjectIndex  # noqa: E402
+from universe.services.vector_index import HashingEmbedder, SubjectIndex, lecture_chunks, subject_chunks  # noqa: E402
 from universe.storage import Workspace, clock_time, pauses, read_timeline, safe_name, write_timeline  # noqa: E402
 
-VALID_REPLY = {
-    "summary": "NPV and IRR.",
-    "key_concepts": [{"term": "NPV", "explanation": "Discounted cash flows."}],
-    "exam_focus": [{"topic": "IRR", "likelihood": "high", "reason": "Repeated twice."}],
-    "quizzes": [
-        {"question": "IRR sets NPV to?", "type": "multiple_choice", "options": ["0", "1"], "answer": "0", "explanation": ""},
-        {"question": "NPV uses WACC.", "type": "true_false", "answer": "True"},
-        {"question": "Define IRR.", "type": "short_answer", "answer": "The rate where NPV = 0."},
-    ],
-    "flashcards": [{"front": "NPV?", "back": "Net present value"}],
-}
+REPLY = (
+    {"t": "topic", "id": "t_irr", "title": "IRR", "lectures": ["L01"], "importance": 3, "why": "Repeated twice."},
+    {"t": "objective", "id": "L01-o001", "topic": "t_irr", "statement": "Define IRR", "importance": 3, "truth": "said"},
+    {
+        "t": "q", "id": "q_1", "objective": "L01-o001", "type": "mc", "stem": "IRR sets NPV to?",
+        "options": [{"text": "0", "correct": True}, {"text": "1", "why_wrong": "That is a ratio"}], "explain": "By definition.",
+    },
+    {"t": "q", "id": "q_2", "objective": "L01-o001", "type": "tf", "stem": "NPV uses WACC.", "answer": "True"},
+    {
+        "t": "q", "id": "q_3", "objective": "L01-o001", "type": "short", "stem": "Define IRR.", "answer": "The rate where NPV = 0.",
+        "rubric": [{"point": "NPV = 0", "marks": 1}],
+    },
+    {"t": "q", "id": "q_4", "objective": "L01-o001", "type": "card", "stem": "NPV?", "answer": "Net present value"},
+)  # fmt: skip
+
+
+def merge_reply(subject, *records: dict, export: str = "x1") -> StudyStore:
+    """Import records the way the app does: parsed, checked, merged."""
+    store = StudyStore(subject)
+    view = subject_model.load_subject(subject)
+    text = jsonl(*records, head={"t": "head", "schema": claude_reply.SCHEMA, "export": export, "part": 1})
+    store.merge(check_reply(parse_reply(text), view, store.known_ids()), text, view)
+    return store
 
 
 class StorageTests(unittest.TestCase):
@@ -47,8 +61,9 @@ class StorageTests(unittest.TestCase):
         lecture = subject.create_lecture("Week 1: NPV")
         self.assertEqual(lecture.name, "Week 1: NPV")
         self.assertEqual(lecture.path.name, "Week 1_ NPV")
-        for sub in ("audio", "slides", "transcripts", "ai"):
+        for sub in ("audio", "slides", "transcripts", "figures"):
             self.assertTrue((lecture.path / sub).is_dir())
+        self.assertFalse((lecture.path / "ai").exists())
         self.assertEqual([lec.name for lec in subject.lectures()], ["Week 1: NPV"])
 
     def test_figures_get_link_safe_names(self):
@@ -219,58 +234,72 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(timestamps.normalize(r"\[▶ 00:00:07\] x"), "[▶ 00:00:07] x")
 
 
-class ClaudeBridgeTests(unittest.TestCase):
+class ClaudeRoundTripTests(unittest.TestCase):
+    def setUp(self):
+        self.professors = ProfessorStore(Path(tempfile.mkdtemp()))
+        profile = ProfessorProfile(name="Dr. Weber")
+        self.professors.save(profile)
+        self.subject = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance", professor_id=profile.id)
+        self.lecture = self.subject.create_lecture("Week 1")
+
+    def view(self):
+        return subject_model.load_subject(self.subject, self.professors)
+
     def test_parse_fenced_reply_with_prose(self):
-        text = "Here you go:\n```json\n" + json.dumps(VALID_REPLY) + "\n```\nGood luck!"
-        response = claude_bridge.parse_response(text)
-        self.assertEqual(len(response.quizzes), 3)
-        self.assertEqual(response.quizzes[0]["difficulty"], "medium")
+        parsed = parse_reply("Here you go:\n```jsonl\n" + jsonl(*REPLY) + "\n```\nGood luck!")
+        self.assertEqual([r["id"] for r in parsed.records if r["t"] == "q"], ["q_1", "q_2", "q_3", "q_4"])
+        self.assertTrue(parsed.finished)
 
     def test_parse_bare_json_with_braces_in_strings(self):
-        data = dict(VALID_REPLY, summary="Sets {x} and } braces")
-        response = claude_bridge.parse_response("prefix " + json.dumps(data))
-        self.assertEqual(response.data["summary"], "Sets {x} and } braces")
+        record = {**REPLY[3], "stem": "Sets {x} and } braces"}
+        parsed = parse_reply("prefix " + jsonl(record))
+        self.assertEqual(next(r for r in parsed.records if r["t"] == "q")["stem"], "Sets {x} and } braces")
 
-    def test_rejects_invalid(self):
-        bad = dict(VALID_REPLY, quizzes=[{"question": "q", "type": "multiple_choice", "options": ["a", "b"], "answer": "c"}])
-        with self.assertRaises(claude_bridge.ResponseError) as ctx:
-            claude_bridge.parse_response(json.dumps(bad))
-        self.assertIn("must match one of its options", str(ctx.exception))
-        with self.assertRaises(claude_bridge.ResponseError):
-            claude_bridge.parse_response("no json here")
+    def test_a_bad_record_is_dropped_and_the_others_stay(self):
+        bad = {**REPLY[2], "id": "q_bad", "options": [{"text": "a"}, {"text": "b"}]}
+        checked = check_reply(parse_reply(jsonl(*REPLY, bad)), self.view())
+        self.assertIn("q_bad", " ".join(f"{i.record} {i.message}" for i in checked.issues if i.level == "error"))
+        self.assertEqual([q["id"] for q in checked.records["q"]], ["q_1", "q_2", "q_3", "q_4"])
+        self.assertEqual(parse_reply("no json here").records, [])
 
-    def test_export_and_save(self):
-        lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance").create_lecture("Week 1")
-        lecture.write_notes("# Week 1\n\n[▶ 00:00:05] NPV intro\n")
-        Transcript("rec.wav", [Segment(5, 9, "Net present value.")]).save(lecture.dir("transcripts"))
-        path = claude_bridge.export_context(lecture, ProfessorProfile(name="Dr. Weber"), n_questions=7)
-        text = path.read_text(encoding="utf-8")
-        for needle in ("7 quiz questions", "Dr. Weber", "[S1.0 ▶ 00:00:05] Net present value.", "```json"):
-            self.assertIn(needle, text)
-        claude_bridge.save_response(lecture, claude_bridge.parse_response(json.dumps(VALID_REPLY)))
-        self.assertEqual(len(claude_bridge.load_latest(lecture).quizzes), 3)
+    def test_export_and_import(self):
+        self.lecture.write_notes("# Week 1\n\n[▶ 00:00:05] NPV intro\n")
+        Transcript("rec.wav", [Segment(5, 9, "Net present value.")]).save(self.lecture.dir("transcripts"))
+        view = self.view()
+        plan = claude_export.plan_export(view, Knowledge())
+        result = claude_export.write_export(view, plan, Knowledge(), [])
+        files = {path.name: path.read_text(encoding="utf-8") for path in result.attach}
+        self.assertIn("Dr. Weber", files[claude_export.OVERVIEW_FILE])
+        self.assertIn("R01@5 Net present value.", files["L01 Week 1.md"])
+        self.assertIn("NPV intro", files["L01 Week 1.md"])
+        self.assertIn("JSON Lines", result.prompt)
+        self.assertEqual(result.prompt_path.read_text(encoding="utf-8"), result.prompt)
+        store = merge_reply(self.subject, *REPLY, export=result.export_id)
+        self.assertEqual(sorted(store.knowledge().questions), ["q_1", "q_2", "q_3", "q_4"])
 
     def test_export_reads_figures_highlights_and_past_exams(self):
         import pymupdf
 
-        lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance").create_lecture("Week 1")
-        png = lecture.add_figure(b"png", {"caption": "VL1.pdf, slide 2", "text": "x", "tables": ["|A|B|\n|---|---|\n|1|2|"]})
-        lecture.write_notes(f"Intro\n\n![VL1.pdf, slide 2](figures/{png.name})\n")
+        png = self.lecture.add_figure(b"png", {"caption": "VL1.pdf, slide 2", "text": "x", "tables": ["|A|B|\n|---|---|\n|1|2|"]})
+        self.lecture.write_notes(f"Intro\n\n![VL1.pdf, slide 2](figures/{png.name})\n")
         slides = pymupdf.open()
         page = slides.new_page()
         page.insert_text((50, 60), "Kapitalwert")
         page.add_highlight_annot(page.search_for("Kapitalwert")[0])
-        slides.save(lecture.dir("slides") / "VL1.pdf")
+        slides.save(self.lecture.dir("slides") / "VL1.pdf")
         exam = pymupdf.open()
         exam.new_page().insert_text((50, 60), "Aufgabe 1: Kapitalwert berechnen")
-        exam.save(lecture.subject.dir("exams") / "Klausur WS24.pdf")
-        text = claude_bridge.build_context(lecture, None)
-        self.assertIn("[Figure F1 — VL1.pdf, slide 2]", text)
-        self.assertIn("> |1|2|", text)
-        self.assertNotIn("Text in the figure", text)  # the table already carries it
+        exam.save(self.subject.dir("exams") / "Klausur WS24.pdf")
+        view = self.view()
+        text = claude_export.render_lecture(view, view.lectures[0])
+        self.assertIn("[Figure F01.1 — VL1.pdf, slide 2]", text)
+        self.assertIn("|1|2|", text)
         self.assertNotIn("](figures/", text)  # no image links Claude cannot open
-        self.assertIn("✎ highlighted: Kapitalwert", text)
-        self.assertIn("Aufgabe 1: Kapitalwert berechnen", text)
+        self.assertRegex(text, r'✎ highlighted[^:\n]*: "Kapitalwert"')
+        self.assertIn("Aufgabe 1: Kapitalwert berechnen", claude_export.render_shared_documents(view))
+        plan = claude_export.plan_export(view, Knowledge())
+        names = [p.name for p in claude_export.write_export(view, plan, Knowledge(), []).attach]
+        self.assertIn(claude_export.SHARED_FILE, names)
 
 
 class IndexTests(unittest.TestCase):
@@ -292,18 +321,86 @@ class IndexTests(unittest.TestCase):
         index.remove_lecture("Week 1")
         self.assertEqual(index._table().count_rows(), 0)
 
+    def test_past_exams_and_tasks_belong_to_no_lecture(self):
+        subject = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance")
+        lecture = subject.create_lecture("Week 1")
+        make_pdf(subject.dir("exams") / "K.pdf", ["Aufgabe Kapitalwert berechnen"])
+        make_pdf(subject.dir("exercises") / "U.pdf", ["Uebung Buchungssatz"])
+        make_pdf(lecture.dir("slides") / "VL.pdf", ["Folie Bilanz"])
+        lecture.write_notes("")
+        chunks = subject_chunks(subject)
+        self.assertEqual([(c.lecture, c.source, c.ref) for c in chunks], [("", "exams", "K.pdf p.1"), ("", "exercises", "U.pdf p.1")])
+        index = SubjectIndex(subject, HashingEmbedder())
+        self.assertEqual(index.index_all(), 3)
+        self.assertEqual(index.index_documents(), 2)  # replaced, not added
+        self.assertEqual(index._table().count_rows(), 3)
+        self.assertEqual(index.search("Aufgabe Kapitalwert berechnen", limit=1)[0].source, "exams")
+        self.assertEqual({hit.source for hit in index.search("Aufgabe Kapitalwert", lecture="Week 1")}, {"slides"})
+        index.index_lecture(lecture)  # re-indexing a lecture leaves the shared documents alone
+        self.assertEqual(index._table().count_rows(), 3)
+
+    def test_a_conversion_is_what_gets_searched(self):
+        subject = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance")
+        lecture = subject.create_lecture("Week 1")
+        path = make_pdf(lecture.dir("slides") / "Scan.pdf", ["", "Roher Text"])
+        lecture.write_notes("")
+        key, _ = subject_model.document_key(path)
+        pdf_conversion.save_pages(subject, key, "Scan.pdf", "SL01", {1: "Bilanz aus dem Scan"})
+        self.assertEqual([(c.ref, c.text) for c in lecture_chunks(lecture)], [("Scan.pdf p.1", "Bilanz aus dem Scan"), ("Scan.pdf p.2", "Roher Text")])
+        self.assertIn("Bilanz aus dem Scan", relevance.course_context(lecture))
+
+    def test_an_unreadable_pdf_does_not_stop_the_others(self):
+        subject = Workspace(Path(tempfile.mkdtemp())).create_subject("Finance")
+        (subject.dir("exams") / "broken.pdf").write_bytes(b"not a pdf")
+        make_pdf(subject.dir("exams") / "K.pdf", ["Aufgabe"])
+        self.assertEqual([c.ref for c in subject_chunks(subject)], ["K.pdf p.1"])
+
 
 class DatasetTests(unittest.TestCase):
-    def test_build_dataset(self):
+    def setUp(self):
         sys.path.insert(0, str(ROOT / "modal_training"))
         import dataset
 
-        lecture = Workspace().create_subject("Dataset Subject").create_lecture("L1")
-        lecture.write_notes("# L1\n\n[▶ 00:00:01] Some notes")
-        claude_bridge.save_response(lecture, claude_bridge.parse_response(json.dumps(VALID_REPLY)))
-        rows = dataset.build_dataset("Dataset Subject")
-        self.assertEqual(len(rows), 1 + 3 + 1)  # notes chunk + quizzes + flashcard
+        self.dataset = dataset
+        self.name = self.id().rsplit(".", 1)[-1]
+        self.subject = Workspace().create_subject(self.name)
+        self.lecture = self.subject.create_lecture("L1")
+        self.lecture.write_notes("")
+
+    def test_build_dataset(self):
+        self.lecture.write_notes("# L1\n\n[▶ 00:00:01] Some notes")
+        merge_reply(self.subject, *REPLY)
+        rows = self.dataset.build_dataset(self.name)
+        self.assertEqual(len(rows), 1 + 4)  # notes chunk + questions
         self.assertNotIn("▶", rows[0]["messages"][2]["content"])
+        pairs = [(row["messages"][1]["content"], row["messages"][2]["content"]) for row in rows[1:]]
+        self.assertEqual(pairs[0], ("IRR sets NPV to?\n- 0\n- 1", "0\n\nBy definition."))
+        self.assertEqual(pairs[1], ("NPV uses WACC.", "True"))
+        self.assertEqual(pairs[2], ("Define IRR.", "The rate where NPV = 0."))
+        self.assertEqual(pairs[3], ("NPV?", "Net present value"))  # a card is front and back
+
+    def test_retired_and_flagged_questions_stay_out(self):
+        store = merge_reply(self.subject, *REPLY, {"t": "retire", "id": "q_2", "why": "doppelt"})
+        store.flag_question("q_3", "falsch")
+        asked = [row["messages"][1]["content"] for row in self.dataset.build_dataset(self.name)]
+        self.assertEqual(asked, ["IRR sets NPV to?\n- 0\n- 1", "NPV?"])
+
+    def test_a_calculation_without_answer_text_gives_its_number(self):
+        calc = {
+            "t": "q", "id": "q_5", "objective": "L01-o001", "type": "calc", "stem": "Kapitalwert?",
+            "numeric": {"value": 1200, "tolerance": 0.5, "unit": "€"}, "rubric": [{"point": "Ergebnis", "marks": 1}],
+        }  # fmt: skip
+        merge_reply(self.subject, *REPLY[:2], calc)
+        self.assertEqual(self.dataset.build_dataset(self.name)[0]["messages"][2]["content"], "1200 €")
+
+    def test_private_talk_and_no_knowledge_yet(self):
+        Transcript("a.wav", [Segment(0, 1, "Inhalt"), Segment(2, 3, "Kino", category="off_topic")]).save(self.lecture.dir("transcripts"))
+        rows = self.dataset.build_dataset(self.name)
+        self.assertEqual([row["messages"][2]["content"] for row in rows], ["Inhalt"])
+
+    def test_dataset_needs_nothing_of_the_app(self):
+        source = (ROOT / "modal_training" / "dataset.py").read_text(encoding="utf-8")
+        self.assertNotIn("universe.", source.replace(".universe_data", ""))
 
 
 @unittest.skipUnless(shutil.which("afconvert"), "needs macOS afconvert")

@@ -13,12 +13,12 @@ A local-first university learning workspace for Apple Silicon Macs. Organise any
   - **Subjects**: subject/lecture tree.
   - **Documents**: every PDF of the open lecture and of its subject in one list. Each has coloured tags: its type (**Slides**, **Past exam**, **Task**) and your own. Right-click a document or use *🏷 Tags* to add or remove tags, create new ones (a colour alone is enough) and change colours; click tags above the list to filter (several narrow it down). Import asks for the type: slides belong to the open lecture, past exams and tasks to the whole subject, and show up under every lecture of it. Changing a tag never moves the file. Below the list is the PDF viewer (PyMuPDF). Scroll continuously through all slides (trackpad, ↑/↓), flip with ←/→ or ◀ ▶, zoom with − / + / Fit (Fit follows the panel width). Drag PDFs onto the panel to import. Drag across slide text to select it and copy it (⌘C or right-click → *Copy* / *Copy page text*); the **Mark** tool highlights text or any area in yellow, green, blue or pink, saved into the PDF (right-click a mark to remove it).
   - **Transcript**: whisper.cpp segments; click a line to play from there.
-  - **AI Tutor**: Claude export/import, interactive Quiz, Analysis, and Search tabs.
+  - **AI Tutor**: Claude, Practice, Guide, Progress and Search tabs, for the whole subject.
   - **Recordings**: the lecture's audio files (`sounddevice` records 16 kHz mono WAV), import, transcription, auto-transcribe switch.
 - **Linked timestamps**: `⌘T` inserts `[▶ HH:MM:SS]` at the current recording time or playback position; clicking a stamp plays the audio from that point.
 - **Offline transcription** with whisper.cpp, GPU-accelerated via Metal.
 - **Semantic search** per subject over transcripts, slide pages and notes (LanceDB).
-- **Claude round trip**: export a lecture as `Context.md`, paste Claude's JSON reply back, get interactive quizzes and an analysis.
+- **Claude round trip**: export a whole subject as Markdown files, import Claude's reply, then practise offline with a memory model and track progress towards the exam.
 - **Optional cloud fine-tuning** of an open-source model on a subject via Modal.
 
 ## Requirements
@@ -95,9 +95,10 @@ To try it out with a throwaway workspace, set `UNIVERSE_DATA_DIR` to another fol
 3. Press **■ Stop**. whisper.cpp transcribes in the background and the Transcript panel fills in.
 4. Optional: **Import PDF…** in the Documents panel; click *Assign a professor* under the lecture title.
 5. Rename the auto-named lecture any time (right-click it in the sidebar).
-6. **⇪ Export for Claude** (`⌘E`) writes `Context.md` and copies it to the clipboard. Paste it into Claude.
-7. Copy Claude's reply, click **⇩ Import reply**, paste, press **Import AI Response**.
-8. Practise in the **Quiz** tab, read the **Analysis** tab, and use **Search** to find where a topic came up.
+6. On the **Claude** tab, export the PDFs and bring their Markdown back from Gemini or Copilot (optional, but it carries tables and graphics).
+7. **⇪ Export for Claude** (`⌘E`) writes the `.md` files and copies the prompt. Drag the files into Claude and paste the prompt.
+8. Copy Claude's reply and click **⇩ Import reply**.
+9. Practise in the **Practice** tab, read the **Guide** tab, watch the **Progress** tab, and use **Search** to find where a topic came up.
 
 ## Keyboard shortcuts
 
@@ -115,11 +116,22 @@ To try it out with a throwaway workspace, set `UNIVERSE_DATA_DIR` to another fol
 
 ## Claude round trip
 
-`Export for Claude` builds `Lectures/<Lecture>/ai/Context.md` containing the professor profile, your notes, the timestamped transcript, the text of every document with its type and tags, and instructions telling Claude to answer with exactly one JSON block. You choose the number of quiz questions.
+It works per subject, with or without an open lecture, on the **Claude** tab. No API key is needed: you drag files and paste text.
 
-The importer accepts the reply with or without `` ``` `` fences or surrounding prose, extracts the JSON and validates it: `summary`, `key_concepts`, `exam_focus`, `knowledge_gaps`, `quizzes` (`multiple_choice`, `true_false`, `short_answer`, each with answer, explanation and a slide/timestamp `source_ref`) and `flashcards`. If something is off, it lists exactly what — nothing is saved until the reply is valid.
+1. **PDFs to Markdown.** *Export PDFs* writes stamped copies to `claude/PDFs to convert/` and copies a prompt for Gemini or Copilot. *Paste result* or *Import .md files…* brings the Markdown back; it is merged page by page into `converted/` and checked against the PDF.
+2. **Export for Claude.** Writes `claude/<date> <scope>/` with `PROMPT.md`, `ALL IN ONE.md`, `CLAUDE.md`, `attach/` (the `.md` files to drag into Claude) and `reply/`. The prompt goes on the clipboard. Slides count as the definitive source, then what was said, past exams and tasks, your notes, the professor profile, and last Claude's own knowledge.
+3. **Import Claude's reply.** The reply is JSON Lines (`universe.reply/2`), one record per line, so a broken line costs one record rather than the whole reply. Every citation is checked against the cited page or line. The report can copy a fix request and a follow-up for missing pages, and *Undo last import* goes back one step. Replies are merged as deltas, and your practice history is never rewritten.
+4. **Tutor.** Copy a prompt for new questions on your weak spots, or for a live tutor session. The results come back the same way.
 
-Valid replies are saved as `ai/response_YYYYMMDD_HHMMSS.json` and `ai/latest.json`. Short answers in the Quiz tab are self-graded; finished attempts are appended to `ai/quiz_attempts.json`.
+Lines you marked private by hand never leave the Mac. Lines a small local model suspected as side talk go along marked `?` if they are in the lecturer's or an unknown voice, so Claude can decide; other voices stay on the Mac unless you tick the box showing their count.
+
+**Practice** runs offline per learning objective with the FSRS-5 memory model, ranked by expected gain on exam day, and mock exams use questions held out of practice. **Guide** shows an exam sheet per topic with clickable citations. **Progress** shows coverage, exam-day recall (a model estimate) and the last mock score; there is no grade prediction.
+
+Claude Code can do the work in the export folder: `CLAUDE.md` tells it what to do, and `python -m universe.services.claude_reply <folder> --subject NAME` validates its reply.
+
+### API mode (optional, off by default)
+
+For times with API access, such as a demo. Turn it on under *Settings → API*, and choose a provider or enter any OpenAI-compatible URL. The Claude tab then gets one more card: *Run everything through the API* converts the unconverted PDFs as page images, exports with the choices in step 2, sends it and imports the reply through the same checks as a paste, with one automatic round each for fixes and for pages nothing accounted for. Each run asks first, because it sends the subject's material to the provider and costs money. Turn it off and the app is plain copy & paste again; all of it lives in `services/api_mode.py`, one settings tab and that card.
 
 ## Lecture content vs. side talk
 
@@ -196,7 +208,7 @@ Embeddings are computed locally. By default UniVerse uses a built-in hashing emb
 
 ## API keys & secrets
 
-UniVerse needs **no API key**: Claude is used by copy & paste, transcription and sorting run locally. If you add keys later (e.g. a Hugging Face token for training), keep them out of git:
+UniVerse needs **no API key**: Claude is used by copy & paste, transcription and sorting run locally. *Settings → API* can optionally run the Gemini and Claude steps through any OpenAI-compatible API (see below). If you add other keys later (e.g. a Hugging Face token for training), keep them out of git:
 
 - **Where keys go:** copy `.env.example` to `.env` and fill it in. `.env`, `*.pem`, `*.key`, `credentials*.json`, `.modal.toml` and `secrets/` are git-ignored. For Modal, prefer `modal secret create huggingface HF_TOKEN=hf_...` — then the key never touches a file. On your Mac, the Keychain is the other safe place.
 - **Safety net:** a pre-commit hook in `.githooks/` blocks commits that contain anything that looks like a key (Anthropic, OpenAI, GitHub, Hugging Face, AWS, Google, Slack tokens, private keys, `api_key = "…"`) or a `.env`-style file. Turn it on once per clone:
@@ -216,7 +228,10 @@ git config core.hooksPath .githooks
 ├── models/ggml-base.en.bin
 ├── Professors/<id>.json
 └── Subjects/<Subject>/
-    ├── subject.json            name, description, default professor, tag colours
+    ├── subject.json            name, description, default professor, tag colours, exam, excluded documents
+    ├── converted/              Markdown of the PDFs, one file per document
+    ├── claude/                 PDFs to convert, and one folder per export (newest 5 kept)
+    ├── study/                  ids.json, knowledge.json, events.jsonl (learning history), exports/, imports/
     ├── .index/                 LanceDB vector store
     ├── exams/                  PDFs imported as past exams + tags.json
     ├── exercises/              PDFs imported as tasks + tags.json
@@ -225,15 +240,14 @@ git config core.hooksPath .githooks
         ├── notes.md
         ├── audio/              recordings ("BWL 2026-10-28 15.30.wav") + imported audio
         ├── slides/             PDFs imported as slides + tags.json
-        ├── transcripts/        <audio>.json (segments) + <audio>.txt
-        └── ai/                 Context.md, response_*.json, latest.json, quiz_attempts.json
+        └── transcripts/        <audio>.json (segments) + <audio>.txt
 ```
 
 Everything is plain files — back it up, sync it, or edit it by hand.
 
 ## Cloud fine-tuning (optional, Modal)
 
-The only part of UniVerse that uses the internet, and only when you run it. It turns a subject's transcripts, notes, imported quizzes and flashcards into a chat dataset and LoRA-fine-tunes an open model on a Modal A10G GPU.
+The only part of UniVerse that uses the internet, and only when you run it. It turns a subject's transcripts, notes and imported questions into a chat dataset and LoRA-fine-tunes an open model on a Modal A10G GPU.
 
 ```bash
 .venv/bin/pip install -r modal_training/requirements.txt
@@ -274,7 +288,14 @@ universe/
 │   ├── timestamps.py      [▶ HH:MM:SS] helpers
 │   ├── pdf_tools.py       PyMuPDF text extraction
 │   ├── vector_index.py    LanceDB per-subject index
-│   ├── claude_bridge.py   Context.md export, JSON import/validation
+│   ├── subject_model.py   one read model of a subject, with stable ids
+│   ├── pdf_conversion.py  stamped PDFs out, Markdown back in, checked page by page
+│   ├── claude_export.py   the .md files, prompts and tutor rounds
+│   ├── claude_reply.py    parsing and checking Claude's JSON Lines reply
+│   ├── study_store.py     knowledge.json, merging, the learning history
+│   ├── practice.py        what to practise, readiness, progress brief
+│   ├── fsrs.py            FSRS-5 memory model
+│   ├── api_mode.py        optional API round trip
 │   ├── relevance.py       lecture vs. side talk, exam cues, segment labels
 │   ├── local_llm.py       sorting with a local OpenAI-compatible server
 │   ├── lmstudio.py        loaded LM Studio instances, unload
@@ -290,7 +311,11 @@ universe/
     ├── pdf_viewer.py
     ├── note_editor.py
     ├── transcript_panel.py
-    ├── ai_panel.py        Claude / Quiz / Analysis / Search
+    ├── ai_panel.py        hosts the tabs below, and Search
+    ├── claude_panel.py    PDFs to Markdown, export, import, tutor
+    ├── practice_panel.py  sessions and mock exams
+    ├── guide_panel.py     exam sheets, lecture views, suggestions
+    ├── progress_panel.py  exam date, readiness, topics, history
     ├── jobs.py            job queue, activity indicator, battery rules
     └── workers.py         background threads
 modal_training/

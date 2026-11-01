@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import config
+from .storage import atomic_write_text
 
 
 @dataclass
@@ -72,7 +73,7 @@ class ProfessorStore:
         return self._from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def save(self, profile: ProfessorProfile) -> None:
-        self._path(profile.id).write_text(json.dumps(asdict(profile), indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_text(self._path(profile.id), json.dumps(asdict(profile), indent=2, ensure_ascii=False))
 
     def delete(self, prof_id: str) -> None:
         self._path(prof_id).unlink(missing_ok=True)

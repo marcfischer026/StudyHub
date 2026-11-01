@@ -72,6 +72,8 @@ class _FlowLayout(QLayout):
         self.setContentsMargins(0, 0, 0, 0)
 
     def addItem(self, item) -> None:
+        if item.widget():  # on macOS a button paints beyond its layout rect, and the row would clip it
+            item.widget().setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect)
         self._items.append(item)
 
     def count(self) -> int:

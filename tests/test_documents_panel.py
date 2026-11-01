@@ -21,13 +21,13 @@ from universe.ui.main_window import MainWindow  # noqa: E402  (before PySide6: l
 import pymupdf  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget  # noqa: E402
 
-from universe.services import claude_bridge, slide_links  # noqa: E402
+from universe.services import claude_export, slide_links, subject_model  # noqa: E402
 from universe.services.vector_index import lecture_chunks  # noqa: E402
 from universe.storage import TAG_PALETTE, Workspace  # noqa: E402
 from universe.ui.ai_panel import hit_target  # noqa: E402
-from universe.ui.documents_panel import DocumentsPanel  # noqa: E402
+from universe.ui.documents_panel import DocumentsPanel, _FlowLayout  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -231,31 +231,50 @@ class PanelTests(Fixture):
 
 
 class ConsumersTests(Fixture):
+    def view(self):
+        return subject_model.load_subject(self.subject)
+
+    def ref(self, view, title: str) -> str:
+        return next(d.ref for d in view.documents if d.title == title)
+
     def test_old_note_links_and_anchors_still_resolve_in_the_export(self):
         self.lecture.write_notes(
             "Siehe [→ Exercise Blatt 1, p. 2](slide:exercises/Blatt%201.pdf#2)\n\nZeile mit Anker\n"
         )
         self.lecture.write_anchors([{"text": "Zeile mit Anker", "doc": "exams", "pdf": "Klausur WS24.pdf", "page": 3}])
-        text = claude_bridge.build_context(self.lecture, None)
-        self.assertIn("(→ see task Blatt 1.pdf p. 2)", text)
-        self.assertIn("⟨past exam Klausur WS24.pdf page 3⟩", text)
+        view = self.view()
+        text = claude_export.render_notes(view.lectures[0])
+        self.assertIn(f"(→ {self.ref(view, 'Blatt 1.pdf')}.p2)", text)
+        self.assertIn(f"Zeile mit Anker ⟨{self.ref(view, 'Klausur WS24.pdf')}.p3⟩", text)
+        self.assertTrue(self.ref(view, "Blatt 1.pdf").startswith("TK"))
+        self.assertTrue(self.ref(view, "Klausur WS24.pdf").startswith("EX"))
 
     def test_export_says_type_and_tags_of_each_document(self):
         self.by_name("Klausur WS24.pdf").set_tags(["Past exam", "Important"])
-        text = claude_bridge.build_context(self.lecture, None)
-        self.assertIn("### VL1.pdf — Type: Slides\n", text)
-        self.assertIn("### Klausur WS24.pdf — Type: Past exam\n\n**Tags:** Important\n", text)
-        self.assertIn("### Blatt 1.pdf — Type: Task\n", text)
-        self.assertIn("Aufgabe 1 Kapitalwert", text)
-        self.assertLess(text.index("## Documents of This Lecture"), text.index("### VL1.pdf"))
-        self.assertLess(text.index("## Documents of the Whole Subject"), text.index("### Klausur WS24.pdf"))
+        view = self.view()
+        lecture = claude_export.render_lecture(view, view.lectures[0])
+        shared = claude_export.render_shared_documents(view)
+        self.assertIn(f"### {self.ref(view, 'VL1.pdf')} — VL1.pdf — Slides — 1 slide —", lecture)
+        self.assertIn(f"### {self.ref(view, 'Klausur WS24.pdf')} — Klausur WS24.pdf — Past exam — 3 pages —", shared)
+        self.assertRegex(shared, r"Past exam — 3 pages — converted 0/3\nTags: [^\n]*Important\n")
+        self.assertIn(f"### {self.ref(view, 'Blatt 1.pdf')} — Blatt 1.pdf — Task — 1 page —", shared)
+        self.assertIn("Aufgabe 1 Kapitalwert", shared)
+        self.assertNotIn("Klausur WS24.pdf", lecture)  # goes along once, in the shared file
 
     def test_export_follows_a_changed_type(self):
         self.by_name("VL1.pdf").set_tags(["Task"])
         self.lecture.write_notes("[→ VL1, slide 2](slide:slides/VL1.pdf#2)\n")
-        text = claude_bridge.build_context(self.lecture, None)
-        self.assertIn("### VL1.pdf — Type: Task", text)
-        self.assertIn("(→ see task VL1.pdf p. 2)", text)
+        view = self.view()
+        ref = self.ref(view, "VL1.pdf")
+        self.assertTrue(ref.startswith("TK"))
+        self.assertIn(f"### {ref} — VL1.pdf — Task", claude_export.render_shared_documents(view))
+        lecture = claude_export.render_lecture(view, view.lectures[0])
+        self.assertIn(f"{ref}: see {claude_export.SHARED_FILE[:-3]}", lecture)
+        self.assertIn(f"(→ {ref}.p2)", lecture)
+
+    def test_a_link_to_a_deleted_pdf_keeps_its_text_with_one_arrow(self):
+        self.lecture.write_notes("[→ Weg, slide 2](slide:slides/Weg.pdf#2)\n")
+        self.assertIn("(→ Weg, slide 2)", claude_export.render_lecture(self.view(), self.view().lectures[0]))
 
     def test_link_text_uses_the_type_and_old_links_still_parse(self):
         self.assertEqual(slide_links.link_text({"doc": "slides", "type": "Task", "pdf": "VL1.pdf", "page": 2}), "→ Task VL1, p. 2")
@@ -274,7 +293,8 @@ class MainWindowTests(unittest.TestCase):
         patcher = mock.patch("universe.ui.main_window.QMessageBox")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.window = MainWindow(Settings())  # never deleted: its destructor waits for threads that need the GIL
+        self.window = MainWindow(Settings())
+        self.addCleanup(self.window.deleteLater)
         self.addCleanup(self.window.hide)
         name = self.id().rsplit(".", 1)[-1]
         self.subject = self.window.workspace.create_subject(name)
@@ -321,6 +341,16 @@ class MainWindowTests(unittest.TestCase):
         self.window.documents.import_paths([source], "slides")
         self.assertEqual(self.window.lecture.name, "Neue Folien")
         self.assertEqual(self.window.documents.viewer.path.name, "Neue Folien.pdf")
+
+
+class FlowLayoutTests(unittest.TestCase):
+    def test_a_button_keeps_the_rect_it_paints(self):
+        # On macOS a button's layout rect is smaller than the widget, and the row would clip it.
+        QApplication.instance() or QApplication([])
+        row = QWidget()
+        button = QPushButton("Start", row)
+        _FlowLayout(row).addWidget(button)
+        self.assertTrue(button.testAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect))
 
 
 del Fixture  # only a base class

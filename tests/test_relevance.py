@@ -15,7 +15,10 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("UNIVERSE_DATA_DIR", tempfile.mkdtemp())
 
 from universe.config import Settings  # noqa: E402
-from universe.services import claude_bridge, local_llm, relevance  # noqa: E402
+from tests.test_claude_reply import jsonl  # noqa: E402
+from universe.services import claude_export, claude_reply, local_llm, relevance, subject_model  # noqa: E402
+from universe.services.claude_reply import check_reply, parse_reply  # noqa: E402
+from universe.services.study_store import Knowledge, StudyStore  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
 from universe.services.vector_index import HashingEmbedder, SubjectIndex  # noqa: E402
 from universe.storage import Workspace  # noqa: E402
@@ -96,13 +99,25 @@ class PrivateTalkIsExcludedTests(unittest.TestCase):
             "local",
         )
 
+    def rendered(self) -> str:
+        view = subject_model.load_subject(self.lecture.subject)
+        return claude_export.render_lecture(view, view.lectures[0])
+
     def test_export_drops_private_talk_and_lists_exam_lines_first(self):
-        text = claude_bridge.build_context(self.lecture, None)
+        transcript = load(self.lecture)
+        for seg in transcript.segments[2:4]:
+            relevance.set_manual(seg, category="off_topic")
+        transcript.save(self.lecture.dir("transcripts"))
+        text = self.rendered()
         self.assertNotIn("Kino", text)
-        self.assertIn("2 segment(s) of private talk were removed", text)
-        self.assertIn("### Marked as exam-relevant", text)
-        self.assertIn("[S1.0 ▶ 00:00:00]", text)
-        self.assertIn('"segment_labels"', text)
+        self.assertIn("2 lines I marked private are left out", text)
+        self.assertLess(text.index("## Marked as exam-relevant"), text.index("## What was said"))
+        self.assertIn("R01@10 ★? Das kommt garantiert", text)
+        self.assertIn("R01@0 Der Kapitalwert", text)
+
+    def test_a_local_guess_about_an_unknown_voice_goes_along_marked(self):
+        # Decided after a real lecture: a small model once sorted out a whole in-class case task.
+        self.assertIn("R01@20 ? Hast du heute Abend Zeit fürs Kino?", self.rendered())
 
     def test_search_index_skips_private_talk(self):
         index = SubjectIndex(self.lecture.subject, HashingEmbedder())
@@ -113,31 +128,37 @@ class PrivateTalkIsExcludedTests(unittest.TestCase):
 
 
 class ClaudeRoundTripTests(unittest.TestCase):
-    def test_import_applies_segment_labels_by_exported_ids(self):
+    def test_import_applies_labels_by_exported_ids(self):
         lecture = make_lecture()
-        claude_bridge.export_context(lecture, None)
-        reply = {
-            "summary": "s",
-            "key_concepts": [],
-            "exam_focus": [],
-            "quizzes": [],
-            "segment_labels": [
-                {"from": "S1.2", "to": "S1.3", "category": "off_topic", "exam": False, "reason": "Privat"},
-                {"from": "S1.1", "category": "lecture", "exam": True, "reason": "Klausurhinweis"},
-            ],
-        }
-        response = claude_bridge.parse_response(json.dumps(reply))
-        self.assertEqual(claude_bridge.apply_segment_labels(lecture, response), 3)
-        segs = load(lecture).segments
-        self.assertTrue(segs[2].private and segs[3].private)
-        self.assertTrue(segs[1].exam)
-        self.assertEqual(segs[1].source, "claude")
+        # Far apart, so that each segment is a line of its own.
+        spaced = [Segment(i * 30, i * 30 + 9, text) for i, text in enumerate(TEXTS)]
+        Transcript("BWL 2026-10-28 15.30.wav", spaced).save(lecture.dir("transcripts"))
+        view = subject_model.load_subject(lecture.subject)
+        result = claude_export.write_export(view, claude_export.plan_export(view, Knowledge()), Knowledge(), [])
+        transcript = load(lecture)
+        transcript.segments.insert(0, Segment(0, 1, "Neu davor"))  # indexes shift; what was exported still counts
+        transcript.save(lecture.dir("transcripts"))
+        text = jsonl(
+            {"t": "label", "from": "R01@60", "to": "R01@90", "category": "off_topic", "exam": False, "reason": "Privat"},
+            {"t": "label", "from": "R01@30", "category": "lecture", "exam": True, "reason": "Klausurhinweis"},
+            head={"t": "head", "schema": claude_reply.SCHEMA, "export": result.export_id, "part": 1},
+        )
+        store = StudyStore(lecture.subject)
+        checked = check_reply(parse_reply(text), view, store.known_ids())
+        self.assertEqual([i.message for i in checked.issues if i.level == "error"], [])
+        self.assertEqual(store.merge(checked, text, view).labels_applied, 2)
+        segs = {seg.text: seg for seg in load(lecture).segments}
+        self.assertTrue(segs[TEXTS[2]].private and segs[TEXTS[3]].private)
+        self.assertTrue(segs[TEXTS[1]].exam)
+        self.assertEqual(segs[TEXTS[1]].source, "claude")
+        self.assertFalse(segs[TEXTS[0]].private or segs["Neu davor"].private)
 
     def test_rejects_bad_categories(self):
-        reply = {"summary": "s", "key_concepts": [], "exam_focus": [], "quizzes": [],
-                 "segment_labels": [{"from": "S1.1", "category": "gossip"}]}
-        with self.assertRaises(claude_bridge.ResponseError):
-            claude_bridge.parse_response(json.dumps(reply))
+        lecture = make_lecture()
+        view = subject_model.load_subject(lecture.subject)
+        checked = check_reply(parse_reply(jsonl({"t": "label", "from": "R01@0", "category": "gossip"})), view)
+        self.assertTrue(any(i.level == "error" and "category must be" in i.message for i in checked.issues), checked.issues)
+        self.assertEqual(checked.records.get("label", []), [])
 
 
 class LocalLLMTests(unittest.TestCase):
@@ -167,7 +188,9 @@ class LocalLLMTests(unittest.TestCase):
         items = [{"id": "S1.0", "category": "lecture", "exam": True, "reason": "exam"},
                  {"id": "S1.1", "category": "off_topic", "exam": False, "reason": "chatter"}]
         for reply in (json.dumps({"labels": items}), json.dumps(items),
-                      "Here you go:\n```json\n" + json.dumps(items) + "\n```"):
+                      "Here you go:\n```json\n" + json.dumps(items) + "\n```",
+                      "[Lecturer] and {x} are tags.\n```json\n" + json.dumps({"labels": items}) + "\n```",
+                      '{"note": "a } in a string"} then ' + json.dumps(items)):
             labels = local_llm._parse(reply)
             self.assertEqual([l["id"] for l in labels], ["S1.0", "S1.1"], reply)
             self.assertEqual(labels[1]["category"], "off_topic")

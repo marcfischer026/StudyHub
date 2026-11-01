@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -18,9 +19,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..professors import ProfessorStore
-from ..services import moodle_ical
+from ..services import moodle_ical, practice
+from ..services.study_store import StudyStore
 from ..storage import Lecture, Subject, Workspace
 from .audio import PlayerBar
+from .claude_panel import exam_date
 from .note_editor import NoteEditor
 
 ROLE = Qt.ItemDataRole.UserRole
@@ -57,6 +60,8 @@ class WelcomePage(QWidget):
         self.title.setObjectName("welcomeTitle")
         self.subtitle = QLabel(wordWrap=True)
         self.subtitle.setObjectName("welcomeSubtitle")
+        self.readiness = QLabel(wordWrap=True)
+        self.readiness.hide()
 
         self.steps = QWidget()
         self.steps.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
@@ -98,6 +103,7 @@ class WelcomePage(QWidget):
         column.setSpacing(14)
         column.addWidget(self.title)
         column.addWidget(self.subtitle)
+        column.addWidget(self.readiness)
         column.addSpacing(6)
         column.addLayout(buttons)
         column.addSpacing(10)
@@ -143,6 +149,7 @@ class WelcomePage(QWidget):
     def show_subject(self, subject: Subject | None) -> None:
         self.subject = subject
         self._show_deadlines()
+        self._show_readiness()
         has_subjects = bool(self.workspace.subjects())
         self.lectures.clear()
         if subject is None:
@@ -184,6 +191,21 @@ class WelcomePage(QWidget):
             item.setData(ROLE, lecture)
             self.lectures.addItem(item)
         self.lectures.setVisible(bool(lectures))
+
+    def _show_readiness(self) -> None:
+        """One line, only once Claude's reply is in: "Exam in 34 days · 62% practised · 12 weak · 42 new"."""
+        line = ""
+        if self.subject is not None:
+            store = StudyStore(self.subject)
+            knowledge = store.knowledge()
+            if knowledge.objectives:
+                when = exam_date(self.subject)
+                events = store.events()
+                ready = practice.readiness(knowledge, events, practice.replay(knowledge, events, when), datetime.now(), when)
+                days = [f"Exam in {ready.days_left} days"] if ready.days_left is not None else []
+                line = " · ".join([*days, f"{ready.coverage:.0%} practised", f"{ready.weak} weak", f"{ready.new} new"])
+        self.readiness.setText(line)
+        self.readiness.setVisible(bool(line))
 
     def _primary_clicked(self) -> None:
         (self.createLecture if self.subject else self.createSubject).emit()

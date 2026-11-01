@@ -216,10 +216,27 @@ class TranscriptPanel(QWidget):
         return [self.list.item(i) for i in range(self.list.count()) if self.list.item(i).data(ROLE)]
 
     def _save(self, items: list[QListWidgetItem]) -> None:
-        """Write back the transcripts the changed lines belong to."""
-        for part in sorted({item.data(ROLE)[3] for item in items}):
-            path, transcript = self.parts[part]
-            transcript.save(path.parent)
+        """Write back only the changed lines, onto the file as it is now: a background job
+        may have labelled other lines since this view read it."""
+        changed: dict[int, list[int]] = {}
+        for item in items:
+            _stem, _start, index, part = item.data(ROLE)
+            changed.setdefault(part, []).append(index)
+        for part, indexes in sorted(changed.items()):
+            path, shown = self.parts[part]
+            current = Transcript.load(path)
+            mine = [shown.segments[index] for index in indexes]
+            where = {(seg.start, seg.end): n for n, seg in enumerate(current.segments)}
+            for seg in mine:
+                if (n := where.get((seg.start, seg.end))) is not None:
+                    current.segments[n] = seg
+            current.save(path.parent)
+            if len(current.segments) != len(shown.segments):  # transcribed again meanwhile
+                self._show_selected()
+                return
+            self.parts[part] = (path, current)
+        for item in self._segment_items():
+            self._style_item(item)
 
     def _style_item(self, item: QListWidgetItem) -> None:
         seg = self._segment(item)

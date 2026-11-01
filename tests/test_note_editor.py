@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("UNIVERSE_DATA_DIR", tempfile.mkdtemp())
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
@@ -17,11 +18,20 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import universe  # noqa: E402,F401
-from universe.services import claude_bridge, slide_links  # noqa: E402
+from universe.services import claude_export, slide_links, subject_model  # noqa: E402
 from universe.storage import Workspace  # noqa: E402
 from universe.ui.note_editor import NoteEditor  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
+
+
+def make_pdf(path: Path) -> None:
+    import pymupdf
+
+    doc = pymupdf.open()
+    for _ in range(12):
+        doc.new_page()
+    doc.save(path)
 
 
 class NoteEditorTypingTests(unittest.TestCase):
@@ -198,10 +208,18 @@ class SlideLinkTests(unittest.TestCase):
         self.notes.insert_slide_link()
         QTest.keyClicks(self.edit, "wichtig")
         self.notes.save()
-        text = claude_bridge.build_context(self.lecture, None)
-        self.assertIn("(→ see VL 1 (neu).pdf slide 12) wichtig", text)
+        text = self.exported_notes()  # the PDF is gone: its name still says what was meant
+        self.assertIn("VL 1 (neu), slide 12) wichtig", text)
         self.assertNotIn("](slide:", text)
-        self.assertIn("⟨VL 1 (neu).pdf slide 12⟩", text)
+        self.assertIn("⟨VL 1 (neu).pdf p.12⟩", text)
+        make_pdf(self.lecture.dir("slides") / "VL 1 (neu).pdf")
+        text = self.exported_notes()
+        self.assertIn("(→ SL01.p12) wichtig", text)
+        self.assertIn("⟨SL01.p12⟩", text)
+
+    def exported_notes(self) -> str:
+        view = subject_model.load_subject(self.lecture.subject)
+        return claude_export.render_notes(view.lectures[0])
 
 
 if __name__ == "__main__":

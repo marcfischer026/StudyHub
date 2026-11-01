@@ -205,6 +205,31 @@ class ModelKeeperTests(unittest.TestCase):
         wait_until(lambda: not keeper._polling)
         self.assertEqual(self.unloaded, [])  # never used by UniVerse → not touched automatically
 
+    def test_deleting_the_keeper_during_a_poll_does_not_hang(self):
+        """Its destructor runs with the GIL held; a pool it owned would wait there for the
+        poll, which needs the GIL: the whole app froze when a window went away at that moment."""
+        from PySide6.QtTest import QTest
+
+        from universe.ui.jobs import ModelKeeper, poll_pool
+
+        started, release = threading.Event(), threading.Event()
+
+        def slow(settings):
+            started.set()
+            release.wait(5)
+            time.sleep(0.2)  # still running when the keeper is deleted
+            return "http://fake:8080/v1", "qwen3-14b-mlx"
+
+        self.local_llm.find_server = slow
+        keeper = ModelKeeper(JobManager(), Settings(local_llm_unload_after=1))
+        keeper.timer.stop()
+        self.assertTrue(wait_until(lambda: started.is_set()))
+        keeper.deleteLater()
+        release.set()
+        QTest.qWait(50)  # runs the deletion, as a window closed under the event loop does
+        self.assertTrue(poll_pool.waitForDone(5000))
+        QApplication.processEvents()  # the late result reaches a keeper that is gone: no error
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from difflib import SequenceMatcher
 import wave
 from dataclasses import asdict, dataclass
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..config import Settings, models_dir
+from ..storage import atomic_write_text
 from .jobcontrol import Cancelled, JobControl
 from .timestamps import make_stamp
 
@@ -68,6 +70,22 @@ class Segment:
 class Transcript:
     audio: str
     segments: list[Segment]
+    id: str = ""  # stable: survives renaming, moving and transcribing again; older files get one on export
+
+    def ensure_id(self) -> str:
+        self.id = self.id or f"r_{uuid.uuid4().hex[:12]}"
+        return self.id
+
+    def carry_over(self, old: "Transcript") -> None:
+        """Keep what must survive transcribing the same recording again: the id and every
+        label the student set by hand, on the new segments that overlap the old ones most."""
+        self.id = old.id or self.id
+        for seg in (s for s in old.segments if s.source == "manual"):
+            overlaps = [(min(s.end, seg.end) - max(s.start, seg.start), s) for s in self.segments]
+            overlap, target = max(overlaps, key=lambda pair: pair[0], default=(0.0, None))
+            if target is not None and overlap > 0:
+                target.category, target.exam, target.note, target.source = seg.category, seg.exam, seg.note, seg.source
+                target.speaker = seg.speaker or target.speaker
 
     @property
     def text(self) -> str:
@@ -81,11 +99,11 @@ class Transcript:
     def save(self, folder: Path) -> Path:
         stem = Path(self.audio).stem
         json_path = folder / f"{stem}.json"
-        json_path.write_text(
-            json.dumps({"audio": self.audio, "segments": [asdict(s) for s in self.segments]}, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        header = {"audio": self.audio, "id": self.id} if self.id else {"audio": self.audio}
+        atomic_write_text(
+            json_path, json.dumps({**header, "segments": [asdict(s) for s in self.segments]}, indent=2, ensure_ascii=False)
         )
-        (folder / f"{stem}.txt").write_text(self.to_stamped_text() + "\n", encoding="utf-8")
+        atomic_write_text(folder / f"{stem}.txt", self.to_stamped_text() + "\n")
         return json_path
 
     @classmethod
@@ -93,7 +111,7 @@ class Transcript:
         raw = json.loads(path.read_text(encoding="utf-8"))
         fields = Segment.__dataclass_fields__
         segments = [Segment(**{k: v for k, v in s.items() if k in fields}) for s in raw.get("segments", [])]
-        return cls(audio=raw.get("audio", path.stem), segments=segments)
+        return cls(audio=raw.get("audio", path.stem), segments=segments, id=raw.get("id", ""))
 
 
 def _norm(text: str) -> str:

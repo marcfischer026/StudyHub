@@ -1,7 +1,8 @@
-"""Per-subject semantic search over transcripts, slides and notes (LanceDB).
+"""Per-subject semantic search over transcripts, slides, notes, past exams and tasks (LanceDB).
 
 Each subject has its own LanceDB database in ``<Subject>/.index``. Re-indexing
-a lecture replaces all of that lecture's rows.
+a lecture replaces all of that lecture's rows. PDFs are searched as their Gemini or
+Copilot conversion where one exists, because that also reads scans and graphics.
 
 Embeddings are computed locally. If ``sentence-transformers`` and its model are
 available they are used; otherwise a deterministic hashing embedder keeps
@@ -21,9 +22,9 @@ import lancedb
 import numpy as np
 import pyarrow as pa
 
-from ..storage import Lecture, Subject
-from . import pdf_tools
+from ..storage import Document, Lecture, Subject
 from . import slide_links
+from .subject_model import best_pages
 from .timestamps import make_stamp
 from .transcriber import Transcript
 
@@ -84,8 +85,8 @@ def get_embedder(model_name: str = "all-MiniLM-L6-v2") -> Embedder:
 
 @dataclass
 class Chunk:
-    lecture: str
-    source: str  # "transcript" | "slides" | "notes"
+    lecture: str  # "" for a document of the whole subject
+    source: str  # "transcript" | "slides" | "notes" | "exams" | "exercises"
     ref: str  # "[▶ 00:12:30]", "Week1.pdf p.4", "notes"
     text: str
 
@@ -111,6 +112,15 @@ def _split(text: str, limit: int = CHUNK_CHARS) -> list[str]:
     return chunks
 
 
+def _document_chunks(document: Document, subject: Subject, lecture: str = "") -> list[Chunk]:
+    try:
+        pages = best_pages(document, subject)
+    except Exception:  # unreadable PDF: search the rest
+        return []
+    ref = document.path.name
+    return [Chunk(lecture, document.folder, f"{ref} p.{number}", piece) for number, text in pages for piece in _split(text)]
+
+
 def lecture_chunks(lecture: Lecture) -> list[Chunk]:
     chunks: list[Chunk] = []
 
@@ -128,15 +138,18 @@ def lecture_chunks(lecture: Lecture) -> list[Chunk]:
         if window:
             chunks.append(Chunk(lecture.name, "transcript", f"{path.stem} {make_stamp(start or 0)}", " ".join(window)))
 
-    for pdf in lecture.pdfs():
-        for number, text in enumerate(pdf_tools.page_texts(pdf), start=1):
-            for piece in _split(text):
-                chunks.append(Chunk(lecture.name, "slides", f"{pdf.name} p.{number}", piece))
+    for document in lecture.documents():
+        chunks += _document_chunks(document, lecture.subject, lecture.name)
 
     for piece in _split(slide_links.for_export(lecture.read_notes())):
         chunks.append(Chunk(lecture.name, "notes", "notes", piece))
 
     return chunks
+
+
+def subject_chunks(subject: Subject) -> list[Chunk]:
+    """Past exams and tasks: they belong to no lecture, and their source is their folder."""
+    return [chunk for document in subject.documents() for chunk in _document_chunks(document, subject)]
 
 
 class SubjectIndex:
@@ -161,11 +174,9 @@ class SubjectIndex:
     def _table(self):
         return self._db.create_table(self.table_name, schema=self._schema(), exist_ok=True)
 
-    def index_lecture(self, lecture: Lecture) -> int:
-        """Replace this lecture's rows. Returns the number of chunks indexed."""
+    def _replace(self, lecture_name: str, chunks: list[Chunk]) -> int:
         table = self._table()
-        table.delete(f"lecture = '{_sql_quote(lecture.name)}'")
-        chunks = lecture_chunks(lecture)
+        table.delete(f"lecture = '{_sql_quote(lecture_name)}'")
         if not chunks:
             return 0
         vectors = self.embedder.embed([c.text for c in chunks])
@@ -177,8 +188,16 @@ class SubjectIndex:
         )
         return len(chunks)
 
+    def index_lecture(self, lecture: Lecture) -> int:
+        """Replace this lecture's rows. Returns the number of chunks indexed."""
+        return self._replace(lecture.name, lecture_chunks(lecture))
+
+    def index_documents(self) -> int:
+        """Replace the rows of the subject's past exams and tasks. Returns the number of chunks indexed."""
+        return self._replace("", subject_chunks(self.subject))
+
     def index_all(self) -> int:
-        return sum(self.index_lecture(lecture) for lecture in self.subject.lectures())
+        return sum(self.index_lecture(lecture) for lecture in self.subject.lectures()) + self.index_documents()
 
     def remove_lecture(self, lecture_name: str) -> None:
         self._table().delete(f"lecture = '{_sql_quote(lecture_name)}'")

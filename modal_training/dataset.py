@@ -45,8 +45,34 @@ def _example(system: str, user: str, assistant: str) -> dict:
     }
 
 
+def _question_example(system: str, question: dict) -> dict | None:
+    """One stored question as Q/A; a card is its front and back. None if it has no answer to learn."""
+    stem = question.get("stem") or ""
+    options = question.get("options") or []
+    correct = next((o["text"] for o in options if o.get("correct")), "")
+    numeric = question.get("numeric") or {}
+    worked_out = f"{numeric['value']} {numeric.get('unit', '')}".strip() if "value" in numeric else ""
+    answer = correct or question.get("answer") or worked_out
+    if not stem or not answer:
+        return None
+    if question.get("type") == "card":
+        return _example(system, stem, answer)
+    asked = "\n".join([stem, *(f"- {o['text']}" for o in options)])
+    return _example(system, asked, f"{answer}\n\n{question.get('explain') or ''}".strip())
+
+
+def _question_examples(subject_dir: Path, system: str) -> list[dict]:
+    """Questions the student flagged as wrong or Claude retired would teach mistakes, so they stay out."""
+    path = subject_dir / "study" / "knowledge.json"
+    if not path.exists():
+        return []
+    questions = json.loads(path.read_text(encoding="utf-8")).get("questions", {}).values()
+    usable = (q for q in questions if not q.get("retired") and not q.get("flagged"))
+    return [example for example in (_question_example(system, q) for q in usable) if example]
+
+
 def build_dataset(subject_name: str) -> list[dict]:
-    """Lecture-content recall (transcripts + notes) plus Q/A from imported quizzes and flashcards."""
+    """Lecture-content recall (transcripts + notes) plus Q/A from the questions imported from Claude."""
     subject_dir = data_root() / "Subjects" / subject_name
     if not subject_dir.exists():
         raise SystemExit(f"Subject folder not found: {subject_dir}")
@@ -71,17 +97,7 @@ def build_dataset(subject_name: str) -> list[dict]:
             for i, chunk in enumerate(_chunks(text)):
                 examples.append(_example(system, f"Explain part {i + 1} of the lecture '{lecture}'.", chunk))
 
-        for response in sorted((lecture_dir / "ai").glob("response_*.json")):
-            data = json.loads(response.read_text(encoding="utf-8"))
-            for quiz in data.get("quizzes", []):
-                question = quiz["question"]
-                if quiz.get("options"):
-                    question += "\n" + "\n".join(f"- {o}" for o in quiz["options"])
-                answer = f"{quiz['answer']}\n\n{quiz.get('explanation', '')}".strip()
-                examples.append(_example(system, question, answer))
-            for card in data.get("flashcards", []):
-                examples.append(_example(system, card["front"], card["back"]))
-    return examples
+    return examples + _question_examples(subject_dir, system)
 
 
 def write_jsonl(examples: list[dict], path: Path) -> Path:

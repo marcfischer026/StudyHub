@@ -100,6 +100,10 @@ class Settings:
     speaker_model: str = ""  # speaker-embedding .onnx in models_dir(); "" = best found (needs sherpa-onnx)
     speaker_threshold: float = 0.2  # cosine similarity above which two voices count as one (tuned for TitaNet-small)
     moodle_calendar_url: str = ""  # Moodle → Calendar → Export calendar → calendar URL; contains a personal token
+    api_enabled: bool = False  # optional: run the Gemini and Claude steps through an API (see api_mode.py)
+    api_url: str = ""  # OpenAI-compatible base URL
+    api_key: str = ""  # UNIVERSE_API_KEY wins over this
+    api_model: str = ""
     embedding_model: str = "all-MiniLM-L6-v2"  # used only if sentence-transformers is installed
     window_state: str = ""  # base64 QMainWindow state
     window_geometry: str = ""
@@ -116,7 +120,10 @@ class Settings:
         return path if path.is_absolute() else models_dir() / path
 
     def save(self) -> None:
-        settings_path().write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        path = settings_path()
+        path.touch(mode=0o600)
+        path.chmod(0o600)  # holds an API key and the Moodle calendar token
+        path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls) -> "Settings":

@@ -133,6 +133,7 @@ class SlidePage(QLabel):
 class PdfViewer(QWidget):
     figureClipped = Signal(dict)  # {"png": bytes, "pdf", "page", "text", "tables"}
     linkRequested = Signal(dict)  # {"pdf", "page"}: put a link to this page into the notes
+    pageChanged = Signal(int)  # the shown page: another page, or another PDF
 
     def __init__(self, parent=None):
         """Shows one PDF; :class:`DocumentsPanel` picks which."""
@@ -142,6 +143,8 @@ class PdfViewer(QWidget):
         self.zoom = 1.0
         self.fit_mode = True  # zoom follows the panel width until the user zooms by hand
         self.page_labels: list[SlidePage] = []
+        self._shown: tuple[Path, int] | None = None  # what pageChanged last said
+        self._jumping = False  # on the way to a page: the ones passed are not page turns
         self._rendered: set[int] = set()
         self._words: dict[int, list[tuple]] = {}  # page -> get_text("words"), filled on demand
         self.highlight_color = "Yellow"
@@ -354,8 +357,10 @@ class PdfViewer(QWidget):
             return
         number = max(1, min(len(self.page_labels), number))
         label = self.page_labels[number - 1]
+        self._jumping = True
         self.scroll.verticalScrollBar().setValue(label.y() - PAGE_GAP)
         self._update_visible()
+        self._jumping = False
         self._set_page_indicator(number)
 
     def _set_page_indicator(self, number: int) -> None:
@@ -364,6 +369,9 @@ class PdfViewer(QWidget):
         self.page.blockSignals(False)
         self.prev_btn.setEnabled(number > 1)
         self.next_btn.setEnabled(number < len(self.page_labels))
+        if not self._jumping and self.path is not None and self._shown != (self.path, number):
+            self._shown = (self.path, number)
+            self.pageChanged.emit(number)
 
     def _update_visible(self) -> None:
         if self.doc is None or not self.page_labels:

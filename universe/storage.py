@@ -7,15 +7,18 @@ Layout::
         .index/                      LanceDB vector store for the subject
         exams/                       PDFs imported as past exams, shared by all lectures
         exercises/                   PDFs imported as tasks / exercise sheets, shared by all lectures
+        converted/                   Markdown made from the PDFs by Gemini or Copilot (see pdf_conversion.py)
+        claude/                      .md exports for Claude, one folder per export (see claude_export.py)
+        study/                       what came back from Claude and the learning history (see study_store.py)
         Lectures/<Lecture>/
             lecture.json
             notes.md                 Markdown notes with [▶ HH:MM:SS] stamps
             notes.anchors.json       hidden per-paragraph context: audio time, open PDF page
             audio/                   recordings ("BWL 2026-10-28 15.30.wav") and imported audio,
                                      plus "<recording>.timeline.json": clock time at start and after each pause
+                                     and "<recording>.slides.json": which PDF page was open when
             slides/                  PDFs imported as slides
             transcripts/             whisper.cpp output (*.json, *.txt)
-            ai/                      Context.md exports and imported AI responses
             figures/                 graphics clipped from PDFs into the notes (PNG + JSON with
                                      source, text and tables, which the Claude export uses)
 
@@ -27,15 +30,18 @@ Tag colours are in ``subject.json`` ("document_tags").
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import config
 
-LECTURE_SUBDIRS = ("audio", "slides", "transcripts", "ai", "figures")
+LECTURE_SUBDIRS = ("audio", "slides", "transcripts", "figures")
 SUBJECT_SUBDIRS = ("exams", "exercises")
 AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
 DOC_TYPES = {"slides": "Slides", "exams": "Past exam", "exercises": "Task"}  # PDF folder -> its type tag
@@ -91,15 +97,30 @@ def safe_name(name: str) -> str:
     return cleaned[:120]
 
 
-def _read_json(path: Path) -> dict:
+def read_json(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def _write_json(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write through a temp file in the same folder, so a crash never leaves half a file."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def write_json(path: Path, data: dict) -> None:
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def recording_time(path: Path) -> datetime:
@@ -129,8 +150,27 @@ def timeline_path(audio: Path) -> Path:
     return audio.with_name(f"{audio.stem}.timeline.json")
 
 
+def slides_path(audio: Path) -> Path:
+    return audio.with_name(f"{audio.stem}.slides.json")
+
+
+def _sidecars(audio: Path) -> list[Path]:
+    """Files next to a recording that belong to it."""
+    return [timeline_path(audio), slides_path(audio)]
+
+
+def write_slide_marks(audio: Path, marks: list[dict]) -> None:
+    """``[{"offset": seconds, "doc": folder, "pdf": name, "page": n}, …]``: each page turn while recording."""
+    write_json(slides_path(audio), {"marks": marks})
+
+
+def read_slide_marks(audio: Path) -> list[dict]:
+    marks = read_json(slides_path(audio)).get("marks", [])
+    return sorted((m for m in marks if isinstance(m, dict) and "offset" in m), key=lambda m: m["offset"])
+
+
 def write_timeline(audio: Path, points: list[tuple[float, datetime]]) -> None:
-    _write_json(timeline_path(audio), {"points": [{"offset": round(o, 2), "at": at.isoformat()} for o, at in points]})
+    write_json(timeline_path(audio), {"points": [{"offset": round(o, 2), "at": at.isoformat()} for o, at in points]})
 
 
 def read_timeline(audio: Path) -> list[tuple[float, datetime]]:
@@ -138,7 +178,7 @@ def read_timeline(audio: Path) -> list[tuple[float, datetime]]:
     pause — pauses are not in the audio. Without a saved timeline (older or imported
     recordings) the start comes from the name, and pauses are unknown."""
     try:
-        points = [(float(p["offset"]), datetime.fromisoformat(p["at"])) for p in _read_json(timeline_path(audio)).get("points", [])]
+        points = [(float(p["offset"]), datetime.fromisoformat(p["at"])) for p in read_json(timeline_path(audio)).get("points", [])]
     except (KeyError, TypeError, ValueError):
         points = []
     return sorted(points) or [(0.0, recording_time(audio))]
@@ -172,16 +212,16 @@ class Document:
 
     @property
     def tags(self) -> list[str]:
-        saved = _read_json(self.path.parent / TAGS_FILE).get(self.path.name)
+        saved = read_json(self.path.parent / TAGS_FILE).get(self.path.name)
         if isinstance(saved, list):
             return [t for t in saved if isinstance(t, str)]
         return [DOC_TYPES[self.folder]]
 
     def set_tags(self, tags: list[str]) -> None:
         sidecar = self.path.parent / TAGS_FILE
-        saved = _read_json(sidecar)
+        saved = read_json(sidecar)
         saved[self.path.name] = list(dict.fromkeys(tags))
-        _write_json(sidecar, saved)
+        write_json(sidecar, saved)
 
     @property
     def types(self) -> list[str]:
@@ -204,6 +244,14 @@ def _pdfs(folder: Path) -> list[Path]:
     return sorted(p for p in folder.iterdir() if p.suffix.lower() == ".pdf" and p.is_file())
 
 
+def _uid(owner: "Lecture | Subject", prefix: str) -> str:
+    uid = owner.meta.get("uid")
+    if not uid:
+        uid = f"{prefix}{uuid.uuid4().hex[:12]}"
+        owner.update_meta(uid=uid)
+    return uid
+
+
 @dataclass(frozen=True)
 class Lecture:
     subject: "Subject"
@@ -215,12 +263,17 @@ class Lecture:
 
     @property
     def meta(self) -> dict:
-        return _read_json(self.path / "lecture.json")
+        return read_json(self.path / "lecture.json")
 
     def update_meta(self, **changes) -> None:
         meta = self.meta
         meta.update(changes)
-        _write_json(self.path / "lecture.json", meta)
+        write_json(self.path / "lecture.json", meta)
+
+    @property
+    def uid(self) -> str:
+        """Stable id: survives renaming the lecture. Older lectures get theirs on first use."""
+        return _uid(self, "l_")
 
     @property
     def professor_id(self) -> str:
@@ -242,15 +295,15 @@ class Lecture:
         return self.notes_path.read_text(encoding="utf-8") if self.notes_path.exists() else ""
 
     def write_notes(self, markdown: str) -> None:
-        self.notes_path.write_text(markdown, encoding="utf-8")
+        atomic_write_text(self.notes_path, markdown)
 
     def read_anchors(self) -> list[dict]:
         """``[{"text": paragraph, "audio": stem, "t": seconds, "doc": kind, "pdf": name, "page": n}, …]``
         in note order; every key but "text" is optional."""
-        return _read_json(self.path / "notes.anchors.json").get("anchors", [])
+        return read_json(self.path / "notes.anchors.json").get("anchors", [])
 
     def write_anchors(self, anchors: list[dict]) -> None:
-        _write_json(self.path / "notes.anchors.json", {"anchors": anchors})
+        write_json(self.path / "notes.anchors.json", {"anchors": anchors})
 
     def add_figure(self, png: bytes, source: dict) -> Path:
         """Store a graphic clipped from a PDF. ``source`` (pdf, page, text, tables, …)
@@ -261,11 +314,11 @@ class Lecture:
         while path.exists():
             path, n = folder / f"{stem}-{n}.png", n + 1
         path.write_bytes(png)
-        _write_json(path.with_suffix(".json"), source)
+        write_json(path.with_suffix(".json"), source)
         return path
 
     def figure_source(self, png: Path) -> dict:
-        return _read_json(png.with_suffix(".json"))
+        return read_json(png.with_suffix(".json"))
 
     def pdfs(self) -> list[Path]:
         return _pdfs(self.dir("slides"))
@@ -293,24 +346,28 @@ class Lecture:
         if target.exists():
             raise FileExistsError(f"{target.name} already exists.")
         audio.rename(target)
-        if timeline_path(audio).exists():
-            timeline_path(audio).rename(timeline_path(target))
+        for old, new in zip(_sidecars(audio), _sidecars(target)):
+            if old.exists():
+                old.rename(new)
         transcripts = self.dir("transcripts")
         txt = transcripts / f"{audio.stem}.txt"
         if txt.exists():
             txt.rename(transcripts / f"{new_stem}.txt")
         js = transcripts / f"{audio.stem}.json"
         if js.exists():
-            data = _read_json(js)
+            data = read_json(js)
             data["audio"] = target.name
-            _write_json(transcripts / f"{new_stem}.json", data)
+            write_json(transcripts / f"{new_stem}.json", data)
             js.unlink()
+        anchors = self.read_anchors()
+        if any(a.get("audio") == audio.stem for a in anchors):  # note lines must keep finding their moment
+            self.write_anchors([a | {"audio": new_stem} if a.get("audio") == audio.stem else a for a in anchors])
         return target
 
     def audio_bundle(self, audio: Path) -> list[Path]:
         """The recording and the transcript files made from it — what deleting it removes."""
         transcripts = self.dir("transcripts")
-        extra = [transcripts / f"{audio.stem}{suffix}" for suffix in (".json", ".txt")] + [timeline_path(audio)]
+        extra = [transcripts / f"{audio.stem}{suffix}" for suffix in (".json", ".txt")] + _sidecars(audio)
         return [audio, *(p for p in extra if p.exists())]
 
     def move_audio(self, audio: Path, target: "Lecture") -> Path:
@@ -330,17 +387,18 @@ class Lecture:
             stem = _free_stem(target.dir("audio"), audio.stem, audio.suffix)
         new_audio = target.dir("audio") / f"{stem}{audio.suffix}"
         shutil.move(str(audio), str(new_audio))
-        if timeline_path(audio).exists():
-            shutil.move(str(timeline_path(audio)), str(timeline_path(new_audio)))
+        for old, new in zip(_sidecars(audio), _sidecars(new_audio)):
+            if old.exists():
+                shutil.move(str(old), str(new))
         source, dest = self.dir("transcripts"), target.dir("transcripts")
         txt = source / f"{audio.stem}.txt"
         if txt.exists():
             shutil.move(str(txt), str(dest / f"{stem}.txt"))
         js = source / f"{audio.stem}.json"
         if js.exists():
-            data = _read_json(js)
+            data = read_json(js)
             data["audio"] = new_audio.name
-            _write_json(dest / f"{stem}.json", data)
+            write_json(dest / f"{stem}.json", data)
             js.unlink()
         return new_audio
 
@@ -398,16 +456,58 @@ class Subject:
 
     @property
     def meta(self) -> dict:
-        return _read_json(self.path / "subject.json")
+        return read_json(self.path / "subject.json")
 
     def update_meta(self, **changes) -> None:
         meta = self.meta
         meta.update(changes)
-        _write_json(self.path / "subject.json", meta)
+        write_json(self.path / "subject.json", meta)
+
+    @property
+    def uid(self) -> str:
+        return _uid(self, "s_")
 
     @property
     def professor_id(self) -> str:
         return self.meta.get("professor_id", "")
+
+    @property
+    def exam(self) -> dict:
+        """``{"date": "2027-02-12", "duration_min": 90, "aids": "…", "notes": "…"}``; every key optional."""
+        saved = self.meta.get("exam")
+        return saved if isinstance(saved, dict) else {}
+
+    def set_exam(self, **changes) -> None:
+        self.update_meta(exam={k: v for k, v in (self.exam | changes).items() if v not in ("", None, 0)})
+
+    @property
+    def excluded_documents(self) -> set[str]:
+        """Keys of documents left out of exports, e.g. a deck filed under the wrong course."""
+        saved = self.meta.get("excluded_documents")
+        return set(saved) if isinstance(saved, list) else set()
+
+    def set_document_excluded(self, key: str, excluded: bool) -> None:
+        keys = self.excluded_documents
+        (keys.add if excluded else keys.discard)(key)
+        self.update_meta(excluded_documents=sorted(keys))
+
+    @property
+    def study_dir(self) -> Path:
+        path = self.path / "study"
+        path.mkdir(exist_ok=True)
+        return path
+
+    @property
+    def converted_dir(self) -> Path:
+        path = self.path / "converted"
+        path.mkdir(exist_ok=True)
+        return path
+
+    @property
+    def claude_dir(self) -> Path:
+        path = self.path / "claude"
+        path.mkdir(exist_ok=True)
+        return path
 
     @property
     def short_name(self) -> str:
@@ -465,7 +565,7 @@ class Subject:
         path.mkdir(parents=True)
         for sub in LECTURE_SUBDIRS:
             (path / sub).mkdir()
-        _write_json(path / "lecture.json", {"name": name, "created": _now(), "professor_id": professor_id})
+        write_json(path / "lecture.json", {"name": name, "created": _now(), "professor_id": professor_id})
         (path / "notes.md").write_text(f"# {name}\n\n", encoding="utf-8")
         return Lecture(self, path)
 
@@ -502,7 +602,7 @@ class Workspace:
         if path.exists():
             raise FileExistsError(f"Subject '{name}' already exists.")
         (path / "Lectures").mkdir(parents=True)
-        _write_json(
+        write_json(
             path / "subject.json",
             {"name": name, "description": description, "created": _now(), "professor_id": professor_id},
         )

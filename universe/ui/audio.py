@@ -41,7 +41,7 @@ from ..services.audio_recorder import AudioRecorder
 from ..services import live_check
 from ..services.live_check import LiveMonitor, LiveStatus
 from ..services.timestamps import format_seconds
-from ..storage import Lecture, clock_time, write_timeline
+from ..storage import Lecture, clock_time, write_slide_marks, write_timeline
 
 MIC_PRIVACY_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 SILENCE_AFTER_S = 4.0
@@ -70,6 +70,7 @@ class AudioController(QObject):
         self.lecture: Lecture | None = None
         self.recording_lecture: Lecture | None = None
         self._timeline: list = []  # (offset, clock time) of the running recording, see storage.read_timeline
+        self._slide_marks: list[dict] = []  # page turns of the running recording
         self.live: LiveMonitor | None = None
         self._silence_warned = False
 
@@ -154,6 +155,7 @@ class AudioController(QObject):
             return False
         self.recording_lecture = lecture
         self._timeline = [(0.0, datetime.now())]
+        self._slide_marks = []
         write_timeline(path, self._timeline)
         self._silence_warned = False
         language = lecture.subject.meta.get("language") or self.settings.whisper_language
@@ -180,6 +182,23 @@ class AudioController(QObject):
         self.recordingFinished.emit(path)
         if self.settings.auto_transcribe:
             self.transcribeRequested.emit(path)
+
+    def _recording_open_lecture(self) -> bool:
+        return bool(self.recording and self.recording_lecture and self.lecture and self.recording_lecture.path == self.lecture.path)
+
+    def start_slide_marks(self, doc: str, pdf: str, page: int) -> None:
+        """The page open as recording starts: goes on file with the first turn, which dates it."""
+        self._slide_marks = [{"offset": 0.0, "doc": doc, "pdf": pdf, "page": page}]
+
+    def mark_slide(self, doc: str, pdf: str, page: int) -> None:
+        """A page turn. Only then is anything written, so a slide timeline costs no battery."""
+        if not self._recording_open_lecture():
+            return
+        mark = {"offset": round(self.recorder.elapsed(), 1), "doc": doc, "pdf": pdf, "page": page}
+        if self._slide_marks and all(self._slide_marks[-1][key] == mark[key] for key in ("doc", "pdf", "page")):
+            return
+        self._slide_marks.append(mark)
+        write_slide_marks(self.recorder.path, self._slide_marks)
 
     def toggle_pause(self) -> None:
         if self.recorder.paused:

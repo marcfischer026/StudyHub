@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from ..config import Settings
 from ..services import lmstudio, local_llm
@@ -173,6 +174,12 @@ class JobManager(QObject):
         self._pool.waitForDone(wait_ms)
 
 
+# Outlives every window: a pool owned by one would wait for its poll in its destructor while
+# holding the GIL that the poll needs, and hang the app.
+poll_pool = QThreadPool()
+poll_pool.setMaxThreadCount(1)
+
+
 class ModelKeeper(QObject):
     """Watches LM Studio: which model instances are loaded, and unloads the one
     UniVerse used once no AI work has happened for ``local_llm_unload_after`` s.
@@ -193,8 +200,6 @@ class ModelKeeper(QObject):
         self.busy_unloading: set[str] = set()
         self._polling = False
         self._mark_pending = False  # a classify job ran since the last poll
-        self._pool = QThreadPool(self)
-        self._pool.setMaxThreadCount(1)
         self._keep: set[Worker] = set()
         jobs.changed.connect(self._on_jobs_changed)
         self.timer = QTimer(self, interval=10_000)
@@ -234,6 +239,8 @@ class ModelKeeper(QObject):
 
         def done(result):
             self._keep.discard(worker)
+            if not isValid(self):  # the window went away during the poll
+                return
             self._polling = False
             root, model, instances = result
             self.root = root if instances is not None else None
@@ -251,7 +258,7 @@ class ModelKeeper(QObject):
 
         worker.signals.finished.connect(done)
         worker.signals.failed.connect(failed)
-        self._pool.start(worker)
+        poll_pool.start(worker)
 
     def _unload_idle(self) -> None:
         after = self.settings.local_llm_unload_after
@@ -280,6 +287,8 @@ class ModelKeeper(QObject):
 
         def finished(_result=None, error: str = ""):
             self._keep.discard(worker)
+            if not isValid(self):
+                return
             self.busy_unloading.discard(instance_id)
             self.used.pop(instance_id, None)
             if error:
@@ -291,7 +300,7 @@ class ModelKeeper(QObject):
 
         worker.signals.finished.connect(finished)
         worker.signals.failed.connect(lambda error: finished(error=error))
-        self._pool.start(worker)
+        poll_pool.start(worker)
         self.changed.emit()
 
     def unload_all(self) -> None:
