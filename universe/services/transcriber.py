@@ -78,12 +78,16 @@ class Transcript:
 
     def carry_over(self, old: "Transcript") -> None:
         """Keep what must survive transcribing the same recording again: the id and every
-        label the student set by hand, on the new segments that overlap the old ones most."""
+        label the student set by hand, on the new segment that overlaps the old one most.
+        A line marked private goes to every new segment it touches: any of them can hold its words."""
         self.id = old.id or self.id
-        for seg in (s for s in old.segments if s.source == "manual"):
+        manual = [s for s in old.segments if s.source == "manual"]
+        for seg in sorted(manual, key=lambda s: s.private):  # private last, so that nothing takes it back
             overlaps = [(min(s.end, seg.end) - max(s.start, seg.start), s) for s in self.segments]
-            overlap, target = max(overlaps, key=lambda pair: pair[0], default=(0.0, None))
-            if target is not None and overlap > 0:
+            overlaps = [pair for pair in overlaps if pair[0] > 0]
+            if not overlaps:
+                continue
+            for target in [s for _, s in overlaps] if seg.private else [max(overlaps, key=lambda pair: pair[0])[1]]:
                 target.category, target.exam, target.note, target.source = seg.category, seg.exam, seg.note, seg.source
                 target.speaker = seg.speaker or target.speaker
 

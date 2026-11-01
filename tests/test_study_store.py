@@ -416,6 +416,48 @@ class LabelTests(Fixture):
         self.assertTrue(self.transcript().segments[1].exam)
 
 
+class UndoLabelTests(Fixture):
+    LABEL = {"t": "label", "from": "R01@948", "to": "R01@995", "category": "off_topic", "reason": "Nein"}
+
+    def test_undo_takes_the_labels_of_the_import_back(self):
+        before = [(s.category, s.exam, s.note, s.source) for s in self.transcript().segments]
+        self.merge(*BASE, self.LABEL)
+        self.assertEqual(self.transcript().segments[2].category, "off_topic")
+        self.assertTrue(self.store.undo_last_import())
+        self.assertEqual([(s.category, s.exam, s.note, s.source) for s in self.transcript().segments], before)
+        self.assertFalse(self.store.undo_last_import())
+
+    def test_what_the_student_changed_since_stays(self):
+        self.merge(*BASE, self.LABEL)
+        transcript = self.transcript()
+        transcript.segments[2].category, transcript.segments[2].source, transcript.segments[2].note = "lecture", "manual", "Set by you"
+        transcript.save(self.lecture.dir("transcripts"))
+        self.store.undo_last_import()
+        segments = self.transcript().segments
+        self.assertEqual((segments[2].category, segments[2].source), ("lecture", "manual"))
+        self.assertEqual((segments[3].category, segments[3].source), ("", ""))
+
+    def test_a_reply_of_only_labels_can_be_undone_too(self):
+        self.merge(self.LABEL)
+        self.assertTrue(self.store.undo_last_import())
+        self.assertEqual(self.transcript().segments[2].category, "")
+
+    def test_a_reply_that_changes_nothing_else_joins_the_step_before_it(self):
+        self.merge(*BASE, self.LABEL)
+        self.merge(*BASE, {"t": "label", "from": "R01@0", "category": "question"})
+        self.store.undo_last_import()
+        segments = self.transcript().segments
+        self.assertEqual((segments[0].category, segments[2].category), ("", ""))
+
+    def test_a_second_import_replaces_what_undo_takes_back(self):
+        self.merge(*BASE, self.LABEL)
+        self.merge({**TOPIC, "title": "Anders"}, {"t": "label", "from": "R01@0", "category": "question"})
+        self.store.undo_last_import()
+        segments = self.transcript().segments
+        self.assertEqual(segments[0].category, "")
+        self.assertEqual(segments[2].category, "off_topic")
+
+
 class CoverageTests(Fixture):
     COVERAGE = {"t": "coverage", "lecture": "L01", "covered": ["SL01.p1", "R01"], "uncovered": [{"page": "SL01.p4", "why": "Agenda"}]}
 

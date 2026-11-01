@@ -179,6 +179,7 @@ class StudyStore:
         self.folder = subject.study_dir
         self.path = self.folder / "knowledge.json"
         self.prev_path = self.folder / "knowledge.prev.json"
+        self.labels_prev_path = self.folder / "labels.prev.json"
         self.events_path = self.folder / "events.jsonl"
         self._cached: Knowledge | None = None
         self._stamp: tuple[int, int] | None = None
@@ -242,8 +243,8 @@ class StudyStore:
                 self._retire(knowledge, record)
             self._assign_holdouts(knowledge, events)
             summary.unverified = sum(not r.get("verified") for kind in ("objective", "q") for r in records.get(kind, ()))
-            self._write_if_changed(before, knowledge)
-            self._apply_labels(records.get("label", ()), view, summary)
+            new_step = self._write_if_changed(before, knowledge)
+            self._remember_labels(self._apply_labels(records.get("label", ()), view, summary), new_step)
             self._append_reply_events(knowledge, records, renamed, events, summary)
             return summary
 
@@ -254,17 +255,18 @@ class StudyStore:
         if not any(folder.glob(f"*-{digest}.jsonl")):
             atomic_write_text(folder / f"{datetime.now():%Y%m%d-%H%M%S}-{digest}.jsonl", raw_text)
 
-    def _write_if_changed(self, before: Knowledge, after: Knowledge) -> None:
+    def _write_if_changed(self, before: Knowledge, after: Knowledge) -> bool:
         """Without a change the undo step stays that of the last real import."""
         old, new = asdict(before), asdict(after)
         old.pop("updated"), new.pop("updated")
         if old == new:
-            return
+            return False
         if self.path.exists():
             atomic_write_text(self.prev_path, self.path.read_text(encoding="utf-8"))
         else:
             write_json(self.prev_path, asdict(Knowledge()))
         self._save(after)
+        return True
 
     @staticmethod
     def _merge_topic(knowledge: Knowledge, topic: dict, summary: MergeSummary) -> None:
@@ -421,9 +423,10 @@ class StudyStore:
             if usable:
                 min(usable, key=lambda q: hashlib.sha1(q["id"].encode()).hexdigest())["pool"] = "holdout"
 
-    @staticmethod
-    def _apply_labels(labels: list[dict], view: SubjectView, summary: MergeSummary) -> None:
-        """Every current segment whose midpoint falls inside a label's time range gets it."""
+    def _apply_labels(self, labels: list[dict], view: SubjectView, summary: MergeSummary) -> dict[str, list[dict]]:
+        """Every current segment whose midpoint falls inside a label's time range gets it.
+        Returns what changed, per transcript, for undo."""
+        changes: dict[str, list[dict]] = {}
         grouped: dict[str, list[dict]] = {}
         for label in labels:
             grouped.setdefault(label["rec"], []).append(label)
@@ -435,7 +438,7 @@ class StudyStore:
                 continue
             transcript = Transcript.load(path)
             visibility = {s.index: s.visibility for s in found[1].segments}
-            changed = False
+            changed: dict[int, dict] = {}
             for label in group:
                 inside = [(i, s) for i, s in enumerate(transcript.segments) if label["start"] <= (s.start + s.end) / 2 <= label["end"]]
                 if not inside:
@@ -454,11 +457,55 @@ class StudyStore:
                     if same and (exam is not True or seg.exam):
                         applied = True  # already has it; applying again would take back a rule's exam cue
                         continue
+                    was = [seg.category, seg.exam, seg.note, seg.source]
                     if relevance.apply_label(seg, category, exam if isinstance(exam, bool) else None, label["reason"], "claude"):
-                        applied = changed = True
+                        applied = True
+                        entry = changed.setdefault(index, {"start": seg.start, "end": seg.end, "was": was})
+                        entry["now"] = [seg.category, seg.exam, seg.note, seg.source]
                 summary.labels_applied += applied
             if changed:
                 transcript.save(path.parent)
+                changes[path.relative_to(self.subject.path).as_posix()] = list(changed.values())
+        return changes
+
+    def _remember_labels(self, changes: dict[str, list[dict]], new_step: bool) -> None:
+        """What undo has to put back. A reply that changes only labels joins the step before it."""
+        stored = {} if new_step else read_json(self.labels_prev_path)
+        for name, items in changes.items():
+            known = {(item["start"], item["end"]): item for item in stored.get(name, [])}
+            for item in items:
+                key = (item["start"], item["end"])
+                if key in known:
+                    known[key]["now"] = item["now"]
+                else:
+                    known[key] = item
+            stored[name] = list(known.values())
+        if stored:
+            write_json(self.labels_prev_path, stored)
+        else:
+            self.labels_prev_path.unlink(missing_ok=True)
+
+    def _undo_labels(self) -> bool:
+        """Labels of the last import go back, unless the student changed that line since."""
+        if not self.labels_prev_path.exists():
+            return False
+        for name, items in read_json(self.labels_prev_path).items():
+            path = self.subject.path / name
+            try:
+                transcript = Transcript.load(path)
+            except (OSError, ValueError):  # renamed or transcribed differently since: those labels stay
+                continue
+            segments = {(s.start, s.end): s for s in transcript.segments}
+            changed = False
+            for item in items:
+                seg = segments.get((item["start"], item["end"]))
+                if seg and [seg.category, seg.exam, seg.note, seg.source] == item["now"]:
+                    seg.category, seg.exam, seg.note, seg.source = item["was"]
+                    changed = True
+            if changed:
+                transcript.save(path.parent)
+        self.labels_prev_path.unlink(missing_ok=True)
+        return True
 
     def _append_reply_events(self, knowledge: Knowledge, records: dict, renamed: dict, events: list[dict], summary: MergeSummary) -> None:
         seen = {e.get("id") for e in events}
@@ -478,11 +525,12 @@ class StudyStore:
                 seen.add(record["id"])
 
     def undo_last_import(self) -> bool:
-        """One step back in what was imported. What the student did since stays: their suspensions, flags
-        and decisions on suggestions. Transcript labels and answers already in the history are not taken back."""
+        """One step back in what was imported, transcript labels included. What the student did since
+        stays: their suspensions, flags, decisions on suggestions, and answers already in the history."""
         with _lock:
+            labels_undone = self._undo_labels()
             if not self.prev_path.exists():
-                return False
+                return labels_undone
             current = self.knowledge()
             restored = Knowledge.from_dict(read_json(self.prev_path))
             for key, question in restored.questions.items():

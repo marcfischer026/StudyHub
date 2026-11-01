@@ -18,7 +18,7 @@ import pymupdf  # noqa: E402
 from universe.professors import ProfessorProfile, ProfessorStore  # noqa: E402
 from universe.services import pdf_conversion, pdf_tools, subject_model  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
-from universe.storage import Workspace, write_slide_marks  # noqa: E402
+from universe.storage import Workspace, write_json, write_slide_marks  # noqa: E402
 
 
 def make_pdf(path: Path, pages: list[str], highlight: str = "") -> Path:
@@ -203,6 +203,44 @@ class RecordingTests(Fixture):
         self.assertTrue(new.segments[0].private)
         self.assertEqual(new.segments[0].text, "Privat neu")
         self.assertEqual(new.segments[1].source, "")
+
+    def test_a_private_line_stays_private_when_it_is_split(self):
+        old = Transcript("a.wav", [Segment(0, 10, "Privat", category="off_topic", source="manual")], id="r_x")
+        new = Transcript("a.wav", [Segment(0, 5, "Privat eins"), Segment(5, 10, "Privat zwei"), Segment(10, 12, "Vorlesung")])
+        new.carry_over(old)
+        self.assertEqual([s.private for s in new.segments], [True, True, False])
+
+    def test_no_other_label_takes_a_private_mark_back(self):
+        old = Transcript(
+            "a.wav",
+            [Segment(0, 5, "Frage", category="question", source="manual"), Segment(5, 10, "Privat", category="off_topic", source="manual")],
+            id="r_x",
+        )
+        new = Transcript("a.wav", [Segment(2, 8, "Beides")])
+        new.carry_over(old)
+        self.assertTrue(new.segments[0].private)
+
+
+class RegistryRecoveryTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.registry = self.subject.study_dir / "ids.json"
+        (self.subject.study_dir / "exports").mkdir()
+        write_json(self.subject.study_dir / "exports" / "x1.json", {
+            "documents": {"SL01": {"key": "d_a", "pages": 1, "empty": []}, "EX03": {"key": "d_b", "pages": 1, "empty": []}},
+            "lectures": {"L02": {"uid": "l_a", "hash": "", "documents": []}},
+            "recordings": {"R05": {"uid": "r_a", "lecture": "l_a", "lines": []}},
+        })
+
+    def test_a_broken_file_does_not_restart_the_numbering(self):
+        self.registry.write_text("kaputt", encoding="utf-8")
+        registry = subject_model.IdRegistry(self.subject)
+        self.assertEqual((registry.number("documents", "d_b"), registry.number("lectures", "l_a"), registry.number("recordings", "r_a")), (3, 2, 5))
+        self.assertEqual(registry.number("documents", "d_new"), 4)
+        self.assertEqual(self.registry.with_name("ids.broken.json").read_text(encoding="utf-8"), "kaputt")
+
+    def test_a_lost_file_does_not_restart_the_numbering(self):
+        self.assertEqual(subject_model.IdRegistry(self.subject).number("documents", "d_new"), 4)
 
 
 class NotesTests(Fixture):

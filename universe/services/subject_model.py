@@ -89,14 +89,31 @@ class IdRegistry:
 
     def __init__(self, subject: Subject):
         self.path = subject.study_dir / "ids.json"
-        self.data = read_json(self.path)
+        self.data = self._read()
+
+    def _read(self) -> dict:
+        """A lost or broken file must not restart the numbering: every export listed the numbers it used."""
+        data = read_json(self.path)
+        if data and isinstance(data, dict):
+            return data
+        try:
+            self.path.replace(self.path.with_name("ids.broken.json"))  # what it held may still be of use
+        except OSError:
+            pass
+        data = {}
+        for manifest in sorted((self.path.parent / "exports").glob("*.json")):
+            exported = read_json(manifest)
+            for kind, field in (("documents", "key"), ("lectures", "uid"), ("recordings", "uid")):
+                for ref, info in exported.get(kind, {}).items():
+                    data.setdefault(kind, {}).setdefault(info[field], int(re.sub(r"\D", "", ref)))
+        return data
 
     def number(self, kind: str, key: str) -> int:
         known = self.data.get(kind, {}).get(key)
         if known is not None:
             return known
         with _registry_lock:  # the export runs in a worker while the panels read too
-            self.data = read_json(self.path)
+            self.data = self._read()
             numbers = self.data.setdefault(kind, {})
             if key not in numbers:
                 numbers[key] = max(numbers.values(), default=0) + 1

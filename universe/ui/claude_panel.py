@@ -781,7 +781,7 @@ class ClaudePanel(ScopedPanel):
             self,
             "Undo last import",
             "Put the imported knowledge back as it was before the last import?\n\n"
-            "Your answers, flags and suspended questions stay. Transcript labels from that reply also stay.",
+            "Your answers, flags and suspended questions stay. Transcript labels from that reply go back, unless you changed them since.",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
