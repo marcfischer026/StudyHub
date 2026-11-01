@@ -489,10 +489,10 @@ class PracticeTabTests(Base):
     def test_free_answer_with_rubric(self):
         self.only(SHORT)
         self.panel.start()
-        self.assertTrue(self.panel.confidence_row.isHidden())
+        self.assertFalse(self.panel.confidence_row.isHidden())
         self.assertFalse(self.panel.answer_text.isHidden())
         self.panel.answer_text.setPlainText("Die Herkunft der Mittel")
-        self.panel.show_btn.click()
+        self.panel.sure.click()
         self.assertIn("Sie zeigt die Mittelherkunft", self.panel.model_answer.text())
         self.assertEqual(self.attempts(), [])  # nothing until graded
         self.assertEqual(len(self.panel.rubric), 2)
@@ -504,26 +504,31 @@ class PracticeTabTests(Base):
         self.assertEqual(attempt["score"], 0.25)  # one mark of four
         self.assertEqual(attempt["by"], "self")
         self.assertEqual(attempt["rating"], 1)
+        self.assertEqual(attempt["confidence"], "sure")
 
     def test_free_answer_without_rubric_uses_three_buttons(self):
         self.only({**SHORT, "rubric": []})
         self.panel.start()
+        self.assertFalse(self.panel.confidence_row.isHidden())
         self.panel.answer_text.setPlainText("etwas")
-        self.panel.show_btn.click()
+        self.panel.sure.click()
         self.assertFalse(self.panel.grade_row.isHidden())
         self.panel.partly.click()
         attempt = self.attempts()[0]
         self.assertEqual(attempt["rating"], 2)
         self.assertGreaterEqual(attempt["score"], 0.5)
+        self.assertEqual(attempt["confidence"], "sure")
 
     def test_a_card_has_no_text_field(self):
         self.only(CARD)
         self.panel.start()
         self.assertTrue(self.panel.answer_text.isHidden())
-        self.panel.show_btn.click()
+        self.assertFalse(self.panel.confidence_row.isHidden())
+        self.panel.sure.click()
         self.assertIn("Rückseite", self.panel.model_answer.text())
         self.panel.got_it.click()
         self.assertEqual(self.attempts()[0]["rating"], 3)
+        self.assertEqual(self.attempts()[0]["confidence"], "sure")
 
     def test_source_links_jump(self):
         self.only(MC)
@@ -575,7 +580,6 @@ class PracticeTabTests(Base):
             seen.add(question["id"])
             self.assertTrue(self.panel.hint_btn.isHidden())
             if question["type"] == "short":
-                self.assertTrue(self.panel.show_btn.isHidden())
                 self.panel.answer_text.setPlainText("Meine Antwort")
                 self.panel.save_free_btn.click()
             else:

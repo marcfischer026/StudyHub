@@ -310,7 +310,7 @@ class Ranking(unittest.TestCase):
         self.assertAlmostEqual(without, practice._value(k["objectives"]["a"], cards["a"], NOW, 30))
         self.assertEqual(practice._horizon(NOW, date(2026, 12, 1)), 30)
         self.assertEqual(practice._horizon(NOW, date(2026, 11, 1)), 1)
-        self.assertEqual(practice._horizon(NOW, date(2020, 1, 1)), 1)
+        self.assertEqual(practice._horizon(NOW, date(2020, 1, 1)), 30)
         self.assertEqual(practice._horizon(NOW, "2026-11-11"), 10)
 
 

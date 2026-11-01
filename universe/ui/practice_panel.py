@@ -43,7 +43,7 @@ PARTLY = 0.6  # a pass, rated Hard
 class Result:
     question: dict
     answer: str
-    score: float
+    score: float | None
     attempt: str  # event id
     ungraded: bool = False  # a free answer in a mock, waiting for the student's own grade
 
@@ -112,7 +112,7 @@ class PracticePanel(ScopedPanel):
         self.options = QVBoxLayout()
         self.option_group = QButtonGroup(self)
         self.answer_line = QLineEdit(placeholderText="Your result")
-        self.answer_text = QPlainTextEdit(placeholderText="Write your answer first, then press Show answer.")
+        self.answer_text = QPlainTextEdit(placeholderText="Write your answer first.")
         self.answer_text.setFixedHeight(100)
         self.hint_label = text_label(muted=True, selectable=True)
         self.hint_btn = QPushButton("Hint (caps how well this counts)")
@@ -124,8 +124,6 @@ class PracticePanel(ScopedPanel):
         for button, confidence in ((self.sure, "sure"), (self.unsure, "unsure"), (self.guess, "guess")):
             button.clicked.connect(lambda _c=False, value=confidence: self.check(value))
         self.confidence_row = button_row(self.sure, self.unsure, self.guess)
-        self.show_btn = QPushButton("Show answer", objectName="primaryButton")
-        self.show_btn.clicked.connect(self.reveal)
         self.save_free_btn = QPushButton("Save and continue", objectName="primaryButton")
         self.save_free_btn.clicked.connect(self.save_free_for_later)
         self.model_answer = text_label(rich=True, selectable=True)
@@ -162,8 +160,7 @@ class PracticePanel(ScopedPanel):
         column.addWidget(self.hint_btn, 0, left)
         for item in (self.confidence_title, self.confidence_row):
             column.addWidget(item)
-        for item in (self.show_btn, self.save_free_btn):
-            column.addWidget(item, 0, left)
+        column.addWidget(self.save_free_btn, 0, left)
         column.addWidget(self.model_answer)
         column.addLayout(self.rubric_box)
         column.addWidget(self.rubric_save, 0, left)
@@ -213,7 +210,12 @@ class PracticePanel(ScopedPanel):
         when = exam_date(self.subject)
         self.cards = practice.replay(knowledge, events, when)
         ready = practice.readiness(knowledge, events, self.cards, now, when)
-        days = "No exam date yet" if ready.days_left is None else f"Exam in {ready.days_left} days"
+        if ready.days_left is None:
+            days = "No exam date yet"
+        elif when is not None and when < now.date():
+            days = "Exam date has passed"
+        else:
+            days = f"Exam in {ready.days_left} days"
         self.header.setText(f"{days} · {ready.weak} weak · {ready.new} new")
         self._fill_targets()
         if not self.in_session and not self.idle.text():
@@ -349,8 +351,12 @@ class PracticePanel(ScopedPanel):
         self.hint_btn.setVisible(bool(question.get("hints")) and not self.is_mock)
         self.hint_btn.setEnabled(True)
         auto = kind not in FREE_TYPES
-        self._set_visible(self.confidence_title, self.confidence_row, on=auto)
-        self.show_btn.setVisible(not auto and not self.is_mock)
+        free_confidence = kind in FREE_TYPES and not self.is_mock
+        self._set_visible(self.confidence_title, self.confidence_row, on=auto or free_confidence)
+        if free_confidence:
+            self.confidence_title.setText("How sure are you? Your answer is shown when you press one.")
+        else:
+            self.confidence_title.setText("How sure are you? Your answer is checked when you press one.")
         self.save_free_btn.setVisible(not auto and self.is_mock)
         self._set_visible(self.model_answer, self.rubric_save, self.grade_row, self.feedback, self.next_btn, on=False)
         self.flag_btn.show()
@@ -377,7 +383,7 @@ class PracticePanel(ScopedPanel):
 
     def check(self, confidence: str) -> None:
         given = self._given()
-        if not given:
+        if not given and self.question.get("type") not in FREE_TYPES:  # not knowing a free answer is allowed: it shows the answer
             self.status.emit("Answer first: then say how sure you are.")
             self.feedback.setText("<i>Answer first: then say how sure you are.</i>")
             self.feedback.show()
@@ -389,7 +395,7 @@ class PracticePanel(ScopedPanel):
             return
         self._record(given, score, confidence, "auto")
 
-    def _record(self, answer: str, score: float, confidence: str, by: str, ungraded: bool = False) -> None:
+    def _record(self, answer: str, score: float | None, confidence: str, by: str, ungraded: bool = False) -> None:
         """At once, so a half-finished session keeps its data."""
         question = self.question
         ms = int((time.monotonic() - self._shown_at) * 1000)
@@ -413,7 +419,7 @@ class PracticePanel(ScopedPanel):
         question = self.question
         self.answer_text.setEnabled(False)
         self.answer_line.setEnabled(False)
-        self._set_visible(self.hint_btn, self.show_btn, self.confidence_title, self.confidence_row, self.save_free_btn, self.feedback, on=False)
+        self._set_visible(self.hint_btn, self.confidence_title, self.confidence_row, self.save_free_btn, self.feedback, on=False)
         self.model_answer.setText(f"<b>Model answer</b><br>{_text(right_answer(question))}{self._details(question)}")
         self.model_answer.show()
         points = [p for p in question.get("rubric") or [] if isinstance(p, dict)]
@@ -444,7 +450,8 @@ class PracticePanel(ScopedPanel):
     def save_free_for_later(self) -> None:
         """A mock gives no feedback, so its free answers are graded at the end."""
         answer = self._given()
-        self._record(answer, 0.0, "", "self", ungraded=bool(answer) or self.question.get("type") == "card")
+        waiting = bool(answer) or self.question.get("type") == "card"  # a blank answer needs no grading
+        self._record(answer, None if waiting else 0.0, "", "self", ungraded=waiting)
 
     # --- feedback -----------------------------------------------------------
 
@@ -488,7 +495,7 @@ class PracticePanel(ScopedPanel):
     def _show_feedback(self, answer: str, score: float) -> None:
         question = self.question
         self.links = []
-        self._set_visible(self.hint_btn, self.confidence_title, self.confidence_row, self.show_btn, on=False)
+        self._set_visible(self.hint_btn, self.confidence_title, self.confidence_row, on=False)
         for choice in self.choices:
             choice.setEnabled(False)
         self.answer_line.setEnabled(False)

@@ -338,13 +338,15 @@ def _answers(knowledge, events) -> list[_Answer]:
         objective = _canon(question.get("objective") or event.get("o") or "", aliases)
         topic = objectives.get(objective, {}).get("topic") or question.get("topic") or event.get("topic") or ""
         graded = event_id in grades
+        if event.get("pending") and not graded:  # a mock's free answer, graded at the end of the mock
+            continue
         score = grades[event_id] if graded else _float(event.get("score"))
         if score is None:
             score = 1.0 if event.get("correct") else 0.0
         correct = score >= PASS if graded or "correct" not in event else bool(event["correct"])
         confidence = event.get("confidence") or ""
         rating = event.get("rating")
-        if graded or rating not in (1, 2, 3, 4):
+        if graded or rating not in (1, 2, 3):
             rating = rating_for(score, confidence, int(_float(event.get("hints"), 0)), question)
         stale = bool(question) and event.get("rev") is not None and event["rev"] != question.get("rev", 1)
         answers.append(
@@ -384,7 +386,9 @@ def replay(knowledge, events, exam_date: date | None = None) -> dict[str, Card]:
 
 def _horizon(now: datetime, exam_date) -> int:
     day = _day(exam_date)
-    return max(1, (day - now.date()).days) if day else NO_DATE_DAYS
+    if not day or day < now.date():
+        return NO_DATE_DAYS
+    return max(1, (day - now.date()).days)
 
 
 def _value(objective: dict, card: Card | None, now: datetime, days_to_exam: int) -> float:
@@ -660,7 +664,7 @@ def _weighted_recall(objectives: dict[str, dict], cards: dict[str, Card], moment
 
 def _exam_moment(now: datetime, exam_date) -> datetime | None:
     day = _day(exam_date)
-    return datetime.combine(max(day, now.date()), time(23, 59, 59)) if day else None
+    return datetime.combine(day, time(23, 59, 59)) if day and day >= now.date() else None
 
 
 def readiness(knowledge, events, cards: dict[str, Card], now: datetime, exam_date) -> Readiness:
@@ -687,7 +691,7 @@ def readiness(knowledge, events, cards: dict[str, Card], now: datetime, exam_dat
         days_active=days_active,
         weak=sum(fsrs.retrievability(cards[key].memory, now) < WEAK_RECALL for key in practised),
         new=sum(not (cards.get(key) and cards[key].attempts) for key in objectives),
-        days_left=(day - now.date()).days if day else None,
+        days_left=max(0, (day - now.date()).days) if day else None,
     )
 
 

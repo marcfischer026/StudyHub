@@ -612,24 +612,26 @@ class StudyStore:
         return event
 
     @staticmethod
-    def _attempt_fields(question: dict, answer: str, score: float, confidence: str, hints: int, ms: int, mode: str, by: str) -> dict:
-        return {
+    def _attempt_fields(question: dict, answer: str, score: float | None, confidence: str, hints: int, ms: int, mode: str, by: str) -> dict:
+        """``score`` None: a mock's free answer, waiting for its grade at the end."""
+        fields = {
             "q": question.get("id", ""),
             "o": question.get("objective", ""),
             "topic": question.get("topic", ""),
             "rev": question.get("rev", 1),
             "mode": mode,
             "answer": answer,
-            "correct": score >= 0.5,
+            "correct": score is not None and score >= 0.5,
             "score": score,
             "confidence": confidence,
             "hints": hints,
             "ms": ms,
             "by": by,
-            "rating": rating_for(score, confidence, hints, question),
+            "rating": rating_for(score or 0.0, confidence, hints, question),
         }
+        return fields if score is not None else fields | {"pending": True}
 
-    def record_attempt(self, question: dict, answer: str, score: float, confidence: str, hints: int, ms: int, mode: str, by: str) -> dict:
+    def record_attempt(self, question: dict, answer: str, score: float | None, confidence: str, hints: int, ms: int, mode: str, by: str) -> dict:
         return self.append_event("attempt", **self._attempt_fields(question, answer, score, confidence, hints, ms, mode, by))
 
     # What the student decides

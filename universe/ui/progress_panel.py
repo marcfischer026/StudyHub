@@ -243,7 +243,7 @@ class ProgressPanel(ScopedPanel):
         when = exam_date(self.subject)
         cards = practice.replay(knowledge, events, when)
         ready = self.readiness = practice.readiness(knowledge, events, cards, now, when)
-        self._show_numbers(ready)
+        self._show_numbers(ready, when)
         self._show_topics(practice.topic_progress(knowledge, cards, events, now, when))
         days = practice.history(events, now)
         self.chart.set_days(days)
@@ -257,12 +257,14 @@ class ProgressPanel(ScopedPanel):
         record = knowledge.lectures.get(lecture.uid)
         return bool(record and record.get("processed") and record.get("hash") == lecture.content_hash)
 
-    def _show_numbers(self, ready: practice.Readiness) -> None:
+    def _show_numbers(self, ready: practice.Readiness, when=None) -> None:
         if ready.objectives:
             self.coverage.setText(f"Coverage: {ready.coverage:.0%}. Share of what matters you have practised ({ready.practised} of {ready.objectives} objectives).")
         else:
             self.coverage.setText("Coverage: nothing imported from Claude yet.")
-        if ready.recall_at_exam is not None:
+        if when is not None and when < date.today():
+            self.recall.setText("Exam-day recall: the exam date has passed.")
+        elif ready.recall_at_exam is not None:
             self.recall.setText(f"Exam-day recall: {ready.recall_at_exam:.0%}. A model's estimate of what you would still know on the day.")
         elif ready.answers >= practice.RECALL_MIN_ANSWERS and ready.days_active >= practice.RECALL_MIN_DAYS and ready.days_left is None:
             self.recall.setText("Exam-day recall: set an exam date to see it.")
