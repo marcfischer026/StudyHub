@@ -531,7 +531,8 @@ class ClaudePanel(ScopedPanel):
 
     def _make_plan(self, view: SubjectView, subject: Subject, choices: tuple[str, str, int, bool]) -> ExportPlan:
         scope, lecture, budget, side_talk = choices
-        return claude_export.plan_export(view, StudyStore(subject).knowledge(), scope, lecture if scope == "lecture" else "", budget, side_talk)
+        store = StudyStore(subject)
+        return claude_export.plan_export(view, store.knowledge(), scope, lecture if scope == "lecture" else "", budget, side_talk, store.events())
 
     def replan(self) -> None:
         """A choice changed: the subject is already read, only the sizes change."""

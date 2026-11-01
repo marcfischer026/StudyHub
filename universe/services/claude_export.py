@@ -746,6 +746,10 @@ def _data_check(view: SubjectView, knowledge, lectures: list[LectureView]) -> li
                     f"{recording.ref} ({lecture.ref}): a local model sorted out {uncertain + side_talk} of {len(recording.segments)} transcript segments: "
                     f"{uncertain} go along marked ?, {side_talk} are side talk."
                 )
+    chosen = {lecture.uid for lecture in lectures}
+    for lecture in view.lectures:
+        if lecture.uid not in chosen and lecture.untranscribed:
+            warnings.append(f"{lecture.ref} {lecture.name}: {_counted(len(lecture.untranscribed), 'recording')} not transcribed yet.")
     if not view.professors:
         warnings.append("No professor profile.")
     if not view.exam.get("date"):
@@ -756,18 +760,25 @@ def _data_check(view: SubjectView, knowledge, lectures: list[LectureView]) -> li
         if not note.get("dismissed"):
             ref = note.get("ref") or note.get("doc")
             warnings.append(f"{ref}: {note.get('detail', '')}" if note.get("issue") == "other" else f"{ref}: may be misfiled or unusable ({note.get('issue')}): {note.get('detail', '')}")
+    for lecture in view.lectures:
+        entry = _part(knowledge, "lectures").get(lecture.uid, {})
+        open_items = [u.get("page", "") for u in entry.get("uncovered") or () if not u.get("why")]
+        if open_items:
+            shown = ", ".join(open_items[:8]) + (f" and {len(open_items) - 8} more" if len(open_items) > 8 else "")
+            warnings.append(f"{lecture.ref}: Claude never accounted for {shown}. Export this lecture again to close them.")
     return warnings
 
 
-def _attach_count(view: SubjectView, knowledge, lectures: list[LectureView], side_talk: bool) -> int:
+def _attach_count(view: SubjectView, knowledge, lectures: list[LectureView], side_talk: bool, events: list[dict] | None = None) -> int:
     count = 1 + bool(_shared(view)) + _has_knowledge(knowledge) + side_talk
+    count += any(e.get("type") == "attempt" for e in events or ())
     sent = {d.ref for d in _shared(view)}
     for lecture in lectures:
         count += len(_split_lecture(lecture, _lecture_blocks(view, lecture, sent, side_talk)))
     return count
 
 
-def plan_export(view: SubjectView, knowledge, scope: str = "next", lecture_ref: str = "", budget: int = CHAT_BUDGET, include_side_talk: bool = False) -> ExportPlan:
+def plan_export(view: SubjectView, knowledge, scope: str = "next", lecture_ref: str = "", budget: int = CHAT_BUDGET, include_side_talk: bool = False, events: list[dict] | None = None) -> ExportPlan:
     if scope not in ("next", "all", "lecture"):
         raise ValueError(f"Unknown export scope: {scope}")
     statuses = [LectureStatus(v, _status(v, knowledge), estimate_tokens(render_lecture(view, v, side_talk_sent=include_side_talk))) for v in view.lectures]
@@ -812,7 +823,7 @@ def plan_export(view: SubjectView, knowledge, scope: str = "next", lecture_ref: 
     checks = _data_check(view, knowledge, chosen)
     overview_warnings = [*warnings, *_unconverted(documents), *checks]
     warnings += [*_unconverted_summary(documents), *checks]
-    files = _attach_count(view, knowledge, chosen, include_side_talk and side_talk_lines > 0)
+    files = _attach_count(view, knowledge, chosen, include_side_talk and side_talk_lines > 0, events)
     if files > MAX_CHAT_FILES:
         warnings.append(f"{files} files are too many for one chat ({MAX_CHAT_FILES}): use ALL IN ONE.md, or Claude Code on the folder.")
         overview_warnings.append(warnings[-1])

@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 SYSTEM_PROMPT = "You are a tutor for the university course '{subject}'. Answer precisely, as the professor would expect."
-_STAMP = re.compile(r"\[▶ \d{1,2}:\d{2}:\d{2}\]")
+_STAMP = re.compile(r"\[▶ \d{1,2}:\d{2}:\d{2}(?: · \d{1,2}:\d{2})?\]")
 
 
 def data_root() -> Path:
@@ -78,8 +78,10 @@ def build_dataset(subject_name: str) -> list[dict]:
         raise SystemExit(f"Subject folder not found: {subject_dir}")
     system = SYSTEM_PROMPT.format(subject=subject_name)
     examples: list[dict] = []
+    lectures_dir = subject_dir / "Lectures"
+    lecture_dirs = sorted(lectures_dir.iterdir()) if lectures_dir.is_dir() else []
 
-    for lecture_dir in sorted((subject_dir / "Lectures").iterdir()):
+    for lecture_dir in lecture_dirs:
         meta_path = lecture_dir / "lecture.json"
         if not meta_path.exists():
             continue

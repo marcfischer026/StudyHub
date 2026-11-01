@@ -69,7 +69,7 @@ def apply_label(seg: Segment, category: str | None, exam: bool | None, reason: s
         seg.category = category
     if exam is not None:
         # An explicit exam cue in the wording beats a classifier saying "not exam".
-        seg.exam = bool(exam) or (seg.exam and seg.source == "rules")
+        seg.exam = bool(exam) or (seg.exam and (seg.source == "rules" or EXAM_CUES.search(seg.text) is not None))
     if reason:
         seg.note = reason
     seg.source = source

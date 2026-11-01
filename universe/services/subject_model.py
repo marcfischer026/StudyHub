@@ -609,9 +609,16 @@ def _lecture_date(lecture: Lecture, recordings: tuple[RecordingView, ...]) -> st
     return (lecture.meta.get("created") or "")[:10]
 
 
-def _content_hash(documents: tuple[DocumentView, ...], recordings: tuple[RecordingView, ...], notes: tuple[NoteLineView, ...]) -> str:
+def _document_state(subject: Subject, document: DocumentView) -> tuple:
+    """What is worth another look by Claude: its Markdown, and highlights, which change the file's
+    size. Read the same way with or without pages, since either view may be compared with a stored hash."""
+    sizes = sorted(d.path.stat().st_size for d in document.occurrences if d.path.exists())
+    return document.key, sorted(pdf_conversion.load_pages(subject, document.key).items()), sizes
+
+
+def _content_hash(subject: Subject, documents: tuple[DocumentView, ...], recordings: tuple[RecordingView, ...], notes: tuple[NoteLineView, ...]) -> str:
     state = {
-        "documents": [(d.key, d.converted_pages) for d in documents],
+        "documents": [_document_state(subject, d) for d in documents],
         # Not the count of normal lines: Claude's own labels change that, and its reply must not reopen the lecture.
         "recordings": [(r.uid, len(r.segments), r.count("private")) for r in recordings],
         "notes": [(n.text, n.tags) for n in notes],
@@ -682,7 +689,7 @@ def load_subject(subject: Subject, professors: ProfessorStore | None = None, pag
                 untranscribed=tuple(stem for stem in audio if stem not in transcribed),
                 notes=notes,
                 has_own_notes=own_notes,
-                content_hash=_content_hash(attached, recording_views, notes),
+                content_hash=_content_hash(subject, attached, recording_views, notes),
             )
         )
     return SubjectView(
