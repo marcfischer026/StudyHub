@@ -451,6 +451,8 @@ class ClaudePanel(ScopedPanel):
             self._jobs.discard(worker)
             self._running -= 1
             self.busy.setVisible(self._running > 0)
+            if not self._running:
+                self._set_api_running(False)
 
         def finished(result) -> None:
             ended()
@@ -500,6 +502,8 @@ class ClaudePanel(ScopedPanel):
     def _new_subject(self) -> None:
         self.view = self.plan = self.result = self.checked = self.conversion = None
         self._parts.clear()
+        self._imported.clear()
+        self._own_copies.clear()
         self.watch.box.setChecked(False)
         for widget in (self.pdf_report, self.copy_missing_btn, self.export_done, self.export_actions, self.reply_report, self.fix_btn, self.follow_up_btn):
             widget.hide()

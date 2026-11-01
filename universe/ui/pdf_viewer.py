@@ -145,6 +145,9 @@ class PdfViewer(QWidget):
         self.page_labels: list[SlidePage] = []
         self._shown: tuple[Path, int] | None = None  # what pageChanged last said
         self._jumping = False  # on the way to a page: the ones passed are not page turns
+        self._settle = QTimer(self, singleShot=True, interval=1500)  # scrolled pages count once they stay
+        self._settle.timeout.connect(self._emit_settled)
+        self._pending: int | None = None
         self._rendered: set[int] = set()
         self._words: dict[int, list[tuple]] = {}  # page -> get_text("words"), filled on demand
         self.highlight_color = "Yellow"
@@ -275,6 +278,8 @@ class PdfViewer(QWidget):
 
     def open_file(self, path: Path | None, message: str = "") -> None:
         """Show ``path``, or ``message`` when there is nothing to show."""
+        self._settle.stop()
+        self._pending = None
         if self.doc is not None:
             self.doc.close()
             self.doc = None
@@ -363,13 +368,25 @@ class PdfViewer(QWidget):
         self._jumping = False
         self._set_page_indicator(number)
 
-    def _set_page_indicator(self, number: int) -> None:
+    def _set_page_indicator(self, number: int, scrolled: bool = False) -> None:
         self.page.blockSignals(True)
         self.page.setValue(number)
         self.page.blockSignals(False)
         self.prev_btn.setEnabled(number > 1)
         self.next_btn.setEnabled(number < len(self.page_labels))
         if not self._jumping and self.path is not None and self._shown != (self.path, number):
+            if scrolled:  # scrolling past pages is not turning them: emit once the page stays
+                self._pending = number
+                self._settle.start(1500)
+            else:
+                self._settle.stop()
+                self._pending = None
+                self._shown = (self.path, number)
+                self.pageChanged.emit(number)
+
+    def _emit_settled(self) -> None:
+        number, self._pending = self._pending, None
+        if number is not None and self.path is not None and self._shown != (self.path, number):
             self._shown = (self.path, number)
             self.pageChanged.emit(number)
 
@@ -395,7 +412,7 @@ class PdfViewer(QWidget):
         current = max((i for i, label in enumerate(self.page_labels) if label.y() <= anchor), default=0)
         if top >= self.scroll.verticalScrollBar().maximum() > 0:
             current = len(self.page_labels) - 1  # scrolled to the bottom: the last slide may never reach the anchor
-        self._set_page_indicator(current + 1)
+        self._set_page_indicator(current + 1, scrolled=True)
 
     def _render(self, index: int) -> None:
         if index in self._rendered or self.doc is None:

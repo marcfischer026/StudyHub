@@ -59,6 +59,7 @@ class ExamForm(QWidget):
         self.known = QCheckBox("Date is known")
         self.date = QDateEdit(calendarPopup=True, displayFormat="dd.MM.yyyy")
         self.duration = QSpinBox(minimum=0, maximum=600, singleStep=15, suffix=" min", specialValueText="Not known")
+        self.duration.setMinimumWidth(self.duration.fontMetrics().horizontalAdvance("Not known") + 48)
         self.aids = QLineEdit(placeholderText="Calculator, one A4 page, …")
         self.suggestion = QPushButton()
         self.suggestion.clicked.connect(self._use_suggestion)

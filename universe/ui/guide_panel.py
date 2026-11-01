@@ -66,9 +66,26 @@ def link_citations(markdown: str, citations: dict) -> str:
 
 def markdown_html(markdown: str) -> str:
     document = QTextDocument()
-    document.setMarkdown(markdown)
+    document.setMarkdown(_shift_headings(markdown))
     match = _BODY.search(document.toHtml())
     return match.group(1) if match else ""
+
+
+_HEADING = re.compile(r"^(\s{0,3})(#{1,6})(\s|$)")
+_FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def _shift_headings(markdown: str) -> str:
+    """Claude's `#` is below the page's `<h2>` title, so `#` becomes `###`, never below `h6`."""
+    out, fenced = [], False
+    for line in markdown.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and (m := _HEADING.match(line)):
+            indent, hashes, gap = m.groups()
+            line = f"{indent}{'#' * min(6, len(hashes) + 2)}{gap}{line[m.end():]}"
+        out.append(line)
+    return "\n".join(out)
 
 
 def _source_order(item: dict) -> tuple:
@@ -211,9 +228,10 @@ class GuidePanel(ScopedPanel):
         self.browser.setHtml(page)
 
     def _sources(self, sources: list) -> str:
-        links = []
+        links, seen = [], set()
         for source in sources or []:
-            if isinstance(source, dict) and source.get("label"):
+            if isinstance(source, dict) and source.get("label") and source["label"] not in seen:
+                seen.add(source["label"])
                 self.links.append(source)
                 links.append(f"<a href='src:{len(self.links) - 1}'>{_e(source['label'])}</a>")
         return " · ".join(links)
@@ -346,6 +364,14 @@ class GuidePanel(ScopedPanel):
             self.sourceActivated.emit(self.links[int(rest)])
         elif scheme in ("accept", "dismiss"):
             kind, _, index = rest.partition(":")
+            if kind not in ("prof", "doc") or not index.isdigit():
+                return
+            if self.store is None:
+                return
+            known = self.store.knowledge()
+            total = len(known.prof_suggestions) if kind == "prof" else len(known.doc_notes)
+            if int(index) >= total:
+                return
             self._decide(scheme == "accept", kind, int(index))
 
     def _decide(self, accept: bool, kind: str, index: int) -> None:

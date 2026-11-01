@@ -60,6 +60,7 @@ class TranscriptPanel(QWidget):
     seekRequested = Signal(str, float)  # audio stem, seconds
     labelsChanged = Signal(object)  # Lecture
     classifyRequested = Signal(object)  # Lecture
+    status = Signal(str)  # for the status bar
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -222,6 +223,8 @@ class TranscriptPanel(QWidget):
         for item in items:
             _stem, _start, index, part = item.data(ROLE)
             changed.setdefault(part, []).append(index)
+        refresh_needed = False
+        unkept = 0
         for part, indexes in sorted(changed.items()):
             path, shown = self.parts[part]
             current = Transcript.load(path)
@@ -230,11 +233,28 @@ class TranscriptPanel(QWidget):
             for seg in mine:
                 if (n := where.get((seg.start, seg.end))) is not None:
                     current.segments[n] = seg
+                else:  # same lines, new times: keep the label on the segment holding the old middle
+                    mid = (seg.start + seg.end) / 2
+                    target = next((i for i, s in enumerate(current.segments) if s.start <= mid <= s.end), None)
+                    if target is None:
+                        unkept += 1
+                        continue
+                    kept = current.segments[target]
+                    kept.category, kept.exam, kept.note, kept.source = seg.category, seg.exam, seg.note, seg.source
+                    if seg.speaker:
+                        kept.speaker = seg.speaker
             current.save(path.parent)
             if len(current.segments) != len(shown.segments):  # transcribed again meanwhile
-                self._show_selected()
-                return
+                refresh_needed = True
+                continue
             self.parts[part] = (path, current)
+        if refresh_needed:
+            self._show_selected()
+            if unkept:
+                self.status.emit(f"{unkept} label{'s' * (unkept != 1)} could not be kept: the segment changed.")
+            return
+        if unkept:
+            self.status.emit(f"{unkept} label{'s' * (unkept != 1)} could not be kept: the segment changed.")
         for item in self._segment_items():
             self._style_item(item)
 
@@ -313,15 +333,20 @@ class TranscriptPanel(QWidget):
         if not items or not self.parts:
             return
         segs = [self._segment(i) for i in items]
+        wanted = {(i.data(ROLE)[3], i.data(ROLE)[2]) for i in items}
+
+        def live() -> list[QListWidgetItem]:
+            return [i for i in self._segment_items() if (i.data(ROLE)[3], i.data(ROLE)[2]) in wanted]
+
         menu = QMenu(self)
         exam_now = all(s.exam for s in segs)
-        menu.addAction("☆ Not exam-relevant" if exam_now else "★ Exam-relevant", lambda: self._set(items, exam=not exam_now))
+        menu.addAction("☆ Not exam-relevant" if exam_now else "★ Exam-relevant", lambda: self._set(live(), exam=not exam_now))
         menu.addSeparator()
         for category, icon in (("lecture", "📖 "), ("question", "❓ "), ("answer", "💬 "), ("off_topic", "🔇 ")):
-            menu.addAction(icon + relevance.CATEGORY_LABELS[category], lambda c=category: self._set(items, category=c))
+            menu.addAction(icon + relevance.CATEGORY_LABELS[category], lambda c=category: self._set(live(), category=c))
         menu.addSeparator()
-        menu.addAction("🎓 The lecturer said this", lambda: self._set_speaker(items, speakers.LECTURER))
-        menu.addAction("👥 Someone else said this", lambda: self._set_speaker(items, speakers.OTHER))
+        menu.addAction("🎓 The lecturer said this", lambda: self._set_speaker(live(), speakers.LECTURER))
+        menu.addAction("👥 Someone else said this", lambda: self._set_speaker(live(), speakers.OTHER))
         voices = {s.speaker for s in segs}
         parts = {i.data(ROLE)[3] for i in items}  # speaker ids only mean something within one recording
         if len(voices) == 1 and len(parts) == 1 and (voice := voices.pop()) not in ("", speakers.LECTURER, speakers.OTHER):

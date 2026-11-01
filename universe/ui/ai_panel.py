@@ -103,6 +103,8 @@ class AIPanel(QWidget):
     # --- binding ------------------------------------------------------------
 
     def set_scope(self, subject: Subject | None, lecture: Lecture | None) -> None:
+        if (subject.path if subject else None) != (self.subject.path if self.subject else None):
+            self.results.clear()
         self.subject, self.lecture = subject, lecture
         self.tabs.setEnabled(subject is not None)
         for panel in (self.claude, self.practice, self.guide, self.progress):

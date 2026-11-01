@@ -314,6 +314,7 @@ class MainWindow(QMainWindow):
         self.transcript.seekRequested.connect(self._seek_audio)
         self.transcript.labelsChanged.connect(self.schedule_index)
         self.transcript.classifyRequested.connect(self.classify)
+        self.transcript.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
         self.documents.pdfImported.connect(self._on_pdf_imported)
         self.documents.viewer.pageChanged.connect(self._on_page_turned)
 
@@ -825,9 +826,16 @@ class MainWindow(QMainWindow):
             self.ai.show_results([])
             return
         lecture_name = self.lecture.name if lecture_only and self.lecture else None
+        wanted = subject.path
+
+        def done(hits) -> None:
+            if self.subject is None or self.subject.path != wanted:
+                return
+            self.ai.show_results(hits)
+
         self._start(
             Worker(lambda: SubjectIndex(subject, self._embedder()).search(query, limit=12, lecture=lecture_name)),
-            self.ai.show_results,
+            done,
             lambda msg: QMessageBox.warning(self, "Search", msg),
             pool=workers.index_pool,
         )
