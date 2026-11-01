@@ -206,7 +206,7 @@ def reply_report(checked: CheckedReply, summary: MergeSummary, parts: set[int]) 
     lines.append(summary.describe())
     missing = sum(map(len, checked.uncovered.values()))
     if missing and parsed.finished:
-        lines.append(f"Slide pages not covered: {missing}. Copy follow-up asks Claude for exactly those.")
+        lines.append(f"Pages and recordings not covered: {missing}. Copy follow-up asks Claude for exactly those.")
     if checked.warnings:
         lines.append(f"{len(checked.warnings)} to look at, such as sources that could not be checked:")
         lines += [f"   line {i.line}: {i.message}" for i in checked.warnings[:MAX_LISTED]]

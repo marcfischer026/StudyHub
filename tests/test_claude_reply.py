@@ -559,13 +559,13 @@ class GuideTests(Fixture):
 
 class UncoveredTests(Fixture):
     def pages(self, checked) -> list[str]:
-        return [item["page"] for item in checked.uncovered.get("L01", ())]
+        return [item["page"] for item in checked.uncovered.get("L01", ()) if not item["page"].startswith("R")]
 
     def test_every_page_with_text_is_asked_for_and_empty_ones_are_not(self):
         self.assertEqual(self.pages(self.check()), ["SL01.p1", "SL01.p2", "SL01.p4"])
 
     def test_pages_listed_in_coverage_count(self):
-        coverage = {"t": "coverage", "lecture": "L01", "covered": ["SL01.p1-2", "R01"], "uncovered": [{"page": "SL01.p4", "why": "Agenda"}]}
+        coverage = {"t": "coverage", "lecture": "L01", "covered": ["SL01.p1-2", "R01", "R02"], "uncovered": [{"page": "SL01.p4", "why": "Agenda"}]}
         checked = self.check(coverage)
         self.assertEqual(checked.uncovered, {})
         self.assertEqual(checked.records["coverage"][0]["uncovered"], [{"page": "SL01.p4", "why": "Agenda"}])
@@ -592,7 +592,8 @@ class UncoveredTests(Fixture):
         self.subject.set_document_excluded(self.view.document("SL01").key, True)
         view = self.load()
         claude_reply.save_manifest(self.subject, claude_reply.build_manifest(view, list(view.lectures), "x2"))
-        self.assertEqual(check_reply(parse_reply(jsonl(head={**HEAD, "export": "x2"})), view).uncovered, {})
+        checked = check_reply(parse_reply(jsonl(head={**HEAD, "export": "x2"})), view)
+        self.assertEqual(self.pages(checked), [])
 
     def test_a_deck_of_two_lectures_is_asked_for_once(self):
         second = self.subject.create_lecture("Woche 2")
@@ -610,7 +611,7 @@ class UncoveredTests(Fixture):
 
 class PromptTests(Fixture):
     def test_nothing_to_ask(self):
-        coverage = {"t": "coverage", "lecture": "L01", "covered": ["SL01"]}
+        coverage = {"t": "coverage", "lecture": "L01", "covered": ["SL01", "R01", "R02"]}
         checked = self.check(TOPIC, OBJECTIVE, MC, coverage)
         self.assertEqual(repair_prompt(checked), "")
         self.assertEqual(follow_up_prompt(checked), "")

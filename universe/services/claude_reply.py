@@ -255,7 +255,7 @@ class Manifest:
 
 def build_manifest(view: SubjectView, lectures: list[LectureView], export_id: str) -> Manifest:
     documents = {
-        d.ref: {"key": d.key, "pages": d.page_count, "empty": [p.number for p in d.pages if p.is_empty]} for d in view.documents
+        d.ref: {"key": d.key, "pages": d.page_count, "empty": [p.number for p in d.pages if p.is_empty]} for d in view.documents_for_export
     }
     excluded = {d.ref for d in view.documents if d.excluded}
     manifest = Manifest(export_id, datetime.now().isoformat(timespec="seconds"), documents=documents)
@@ -333,7 +333,9 @@ class _Checker:
         self.from_export = found is not None
         self.manifest = found or self.current
         # Numbers are never reused, so ids from outside this export still mean the same thing.
-        self.documents = {int(re.sub(r"\D", "", ref)): (ref, info) for ref, info in {**self.manifest.documents, **self.current.documents}.items()}
+        allowed = {d.key for d in view.documents_for_export}
+        merged = {**self.manifest.documents, **self.current.documents}
+        self.documents = {int(re.sub(r"\D", "", ref)): (ref, info) for ref, info in merged.items() if info.get("key") in allowed}
         self.ids: dict[str, set[str]] = {"topics": set(), "objectives": set(), "questions": set(), "attempts": set()}
         self.accounted: set[str] = set(self.known.get("accounted_pages", ()))
         self.unknown_pages: dict[str, list[str]] = {}
@@ -400,6 +402,8 @@ class _Checker:
 
     def _page_text(self, key: str, page: int) -> str | None:
         document = self.view.document(key)
+        if document is None or document.excluded:
+            return None
         shown = document.page(page) if document else None
         if shown is None:
             return None
@@ -451,6 +455,7 @@ class _Checker:
             label, info, (start, end) = found
             text = self._line_text(info["uid"], start, end)
             verified = quote_found(wanted, text) if wanted and text is not None else not wanted
+            self.accounted.add(label.partition("@")[0])
             return {"kind": "line", "rec": info["uid"], "t": start, "end": end, "label": label, "quote": quote, "verified": verified}
         if match.group("noteno") or match.group("figno"):
             figure = bool(match.group("figno"))
@@ -799,16 +804,28 @@ class _Checker:
                 unknown.append(token)
         return pages, unknown
 
+    def _cover_refs(self, entry: str) -> list[str]:
+        """Recording refs named in a coverage entry."""
+        refs = []
+        for token in filter(None, (t.strip() for t in str(entry).split(","))):
+            if re.fullmatch(r"R\d+(?:@\d+(?:\.\d+)?)?", token):
+                found = self._recording(re.sub(r"\D", "", token.partition("@")[0]))
+                if found:
+                    refs.append(found[0])
+        return refs
+
     def _check_coverage(self, record: dict) -> dict | None:
         lecture = self.lecture(record.get("lecture"))
         if lecture is None:
             return self.error(record, f"Lecture {record.get('lecture')} does not exist.")
         ref, info = lecture
         covered, unknown = [], []
+        recs = []
         for entry in _as_list(record.get("covered")):
             pages, missing = self._expand_cover(entry)
             covered += pages
             unknown += missing
+            recs += self._cover_refs(entry)
         stated = []
         for item in _as_list(record.get("uncovered")):
             page, why = (item.get("page", ""), item.get("why", "")) if isinstance(item, dict) else (item, "")
@@ -816,7 +833,11 @@ class _Checker:
             covered += pages
             unknown += missing
             stated += [{"page": f"{r}.p{n}", "why": str(why)} for _, r, n in pages]
-        accounted = sorted({f"{key}.p{page}" for key, _, page in covered})
+            for rec in self._cover_refs(page):
+                if str(why).strip():
+                    recs.append(rec)
+                    stated.append({"page": rec, "why": str(why)})
+        accounted = sorted({f"{key}.p{page}" for key, _, page in covered} | set(recs))
         self.accounted.update(accounted)
         if unknown:
             self.unknown_pages.setdefault(ref, []).extend(unknown)
@@ -887,7 +908,7 @@ class _Checker:
     # The whole reply
 
     def _uncovered(self) -> dict[str, list[dict]]:
-        """Pages of each lecture's slides that nothing accounts for. Without a manifest "each lecture
+        """Pages and recordings of each lecture that nothing accounts for. Without a manifest "each lecture
         of this export" means nothing, so only lectures with a coverage record are held to it."""
         found: dict[str, list[dict]] = {}
         accounted = set(self.accounted)  # a deck of several lectures is asked for once
@@ -905,6 +926,15 @@ class _Checker:
                     if page not in empty and key not in accounted:
                         accounted.add(key)
                         found.setdefault(ref, []).append({"page": f"{shown_ref}.p{page}", "why": ""})
+            for rec_ref, rec_info in self.manifest.recordings.items():
+                if rec_info.get("lecture") != info["uid"]:
+                    continue
+                if not rec_info.get("lines"):  # nothing left to read
+                    continue
+                if rec_ref in accounted:
+                    continue
+                accounted.add(rec_ref)
+                found.setdefault(ref, []).append({"page": rec_ref, "why": ""})
         return found
 
     def run(self) -> CheckedReply:
@@ -1006,19 +1036,19 @@ def repair_prompt(checked: CheckedReply) -> str:
 
 
 def follow_up_prompt(checked: CheckedReply) -> str:
-    """Asks for exactly the pages nothing accounted for; empty when there are none."""
+    """Asks for exactly the pages and recordings nothing accounted for; empty when there are none."""
     if not checked.uncovered:
         return ""
     lines = [
-        "Your reply does not account for these slide pages. Please read them now and write what is missing: "
-        "objective, q, said and conflict records that cite them, or, if a page holds nothing for the exam, a coverage "
+        "Your reply does not account for these pages and recordings. Please read them now and write what is missing: "
+        "objective, q, said and conflict records that cite them, or, if a page or recording holds nothing for the exam, a coverage "
         "record listing it under uncovered with the reason.",
         "",
     ]
     lines += [f"- {ref}: {', '.join(item['page'] for item in items)}" for ref, items in checked.uncovered.items()]
     lines += [
         "",
-        "Only these pages, in the same format: JSON Lines, one record per line, reusing the ids you already gave. "
+        "Only these pages and recordings, in the same format: JSON Lines, one record per line, reusing the ids you already gave. "
         f"Start with {_head_example(checked)} and end with an end record.",
     ]
     return "\n".join(lines)

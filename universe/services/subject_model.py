@@ -716,7 +716,7 @@ def best_pages(document: Document, subject: Subject) -> list[tuple[int, str]]:
 def locate(view: SubjectView, source: dict) -> dict | None:
     """Where a stored source is now, as the jump handlers want it: ``{"doc", "pdf", "page", "lecture"}``
     for a page, ``{"audio", "t", "lecture"}`` for a moment in a recording, ``{"lecture"}`` for a
-    note. ``lecture`` is a Lecture, or None for a document of the whole subject. None if it is gone."""
+    note or figure. ``lecture`` is a Lecture, or None for a document of the whole subject. None if it is gone."""
     kind = source.get("kind")
     if kind == "page":
         document = view.document(source.get("doc", ""))
@@ -733,7 +733,7 @@ def locate(view: SubjectView, source: dict) -> dict | None:
             return None
         lecture, recording = found
         return {"audio": recording.stem, "t": float(source.get("t", 0.0)), "lecture": lecture.lecture}
-    if kind == "note":
+    if kind in ("note", "figure"):
         lecture = view.lecture(source.get("lecture", ""))
         return {"lecture": lecture.lecture} if lecture else None
     return None

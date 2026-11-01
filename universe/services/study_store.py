@@ -104,7 +104,7 @@ class MergeSummary:
         if self.lectures_done:
             lines.append(f"Processed: {', '.join(self.lectures_done)}.")
         if self.uncovered_pages:
-            lines.append(f"{self.uncovered_pages} slide pages are not accounted for.")
+            lines.append(f"{self.uncovered_pages} pages and recordings are not accounted for.")
         if self.unverified:
             lines.append(f"{self.unverified} objectives or questions have no verified source; they stay out of mock exams.")
         return "\n".join(lines) or "Nothing new in this reply."
@@ -123,6 +123,18 @@ def _content(item: dict) -> dict:
     return {k: v for k, v in item.items() if k not in ("sources", "verified")}
 
 
+def _supported(sources: list | None) -> bool:
+    """A verified source from slides, recordings, past exams or tasks."""
+    for source in sources or ():
+        if not source.get("verified"):
+            continue
+        if source.get("kind") == "line":
+            return True
+        if source.get("kind") == "page" and str(source.get("label", ""))[:2] in ("SL", "EX", "TK"):
+            return True
+    return False
+
+
 def _upsert(store: dict, key: str, item: dict, kind: str, summary: MergeSummary, defaults: dict | None = None) -> None:
     old = store.get(key)
     if old is None:
@@ -132,6 +144,11 @@ def _upsert(store: dict, key: str, item: dict, kind: str, summary: MergeSummary,
     merged = {**old, **item}
     if "sources" in old and not item.get("sources"):  # nothing new to say about where it stands
         merged["sources"] = old["sources"]
+        if "verified" in old:
+            merged["verified"] = old["verified"]
+    elif kind in ("objectives", "questions") and "sources" in old and not _supported(item.get("sources")) and _supported(old.get("sources")):
+        # a reply may add evidence, never remove it
+        merged["sources"] = [*old["sources"], *(s for s in (item.get("sources") or ()) if s not in old["sources"])]
         if "verified" in old:
             merged["verified"] = old["verified"]
     if _content(merged) != _content(old):
@@ -162,10 +179,14 @@ def _follow(aliases: dict, objective: str) -> str:
 
 
 def _page_keys(value: object, found: set[str]) -> None:
-    """Every page cited anywhere, however deep: ``d_key.p12``."""
+    """Every page cited anywhere, however deep: ``d_key.p12``. A cited line counts its recording."""
     if isinstance(value, dict):
         if value.get("kind") == "page":
             found.add(f"{value.get('doc')}.p{value.get('page')}")
+        elif value.get("kind") == "line":
+            ref = str(value.get("label", "")).partition("@")[0].strip()
+            if ref:
+                found.add(ref)
         for item in value.values():
             _page_keys(item, found)
     elif isinstance(value, list):
@@ -410,12 +431,19 @@ class StudyStore:
         attempted = {e.get("q") for e in events if e.get("type") == "attempt"}
         probes: dict[str, list[dict]] = {}
         for question in knowledge.questions.values():
+            if question.get("pool") == "holdout" and question.get("retired"):
+                question["pool"] = "practice"  # retired: no longer held out
             if not question.get("retired"):
                 probes.setdefault(question.get("objective", ""), []).append(question)
         for objective, questions in probes.items():
             info = knowledge.objectives.get(objective, {})
-            if info.get("retired") or info.get("importance", 0) < 2 or len(questions) < HOLDOUT_MIN_PROBES:
+            importance = info.get("importance")
+            importance = importance if importance in (1, 2, 3) else 2
+            if info.get("retired") or importance < 2 or len(questions) < HOLDOUT_MIN_PROBES:
                 continue
+            for held in questions:
+                if held.get("pool") == "holdout" and (held["id"] in attempted or not held.get("verified") or held.get("suspended") or held.get("flagged")):
+                    held["pool"] = "practice"  # unusable: a new one is chosen below
             if any(q.get("pool") == "holdout" for q in questions):
                 continue
             # Mocks take only verified questions, and flags and suspensions keep a question out of them.

@@ -509,7 +509,7 @@ class BrokenFileTests(Fixture):
 
 
 class CoverageTests(Fixture):
-    COVERAGE = {"t": "coverage", "lecture": "L01", "covered": ["SL01.p1", "R01"], "uncovered": [{"page": "SL01.p4", "why": "Agenda"}]}
+    COVERAGE = {"t": "coverage", "lecture": "L01", "covered": ["SL01.p1", "R01", "R02"], "uncovered": [{"page": "SL01.p4", "why": "Agenda"}]}
 
     def test_marks_a_lecture_processed_with_the_manifests_hash(self):
         summary = self.merge(self.COVERAGE)
