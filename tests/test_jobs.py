@@ -17,7 +17,7 @@ os.environ.setdefault("UNIVERSE_DATA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import psutil  # noqa: E402
-from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, Qt, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import universe  # noqa: E402,F401
@@ -280,3 +280,33 @@ class UsageChartTests(unittest.TestCase):
         self.assertEqual(_change(readings, "gpu", now), 4)
         self.assertEqual(_stats(readings, "cpu"), (80, 20, 45))
         self.assertIsNone(_stats(readings[:1], "gpu"))
+
+    def test_popup_is_a_panel_in_the_window_and_closes_like_a_popover(self):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QKeyEvent, QMouseEvent
+        from PySide6.QtWidgets import QMainWindow, QPushButton
+
+        window = QMainWindow()
+        window.resize(900, 700)
+        outside = QPushButton("elsewhere")
+        window.setCentralWidget(outside)
+        indicator = ActivityIndicator(JobManager(), Settings())
+        indicator.timer.stop()
+        window.statusBar().addPermanentWidget(indicator)
+        window.show()
+        indicator.toggle_popup()
+        popup = indicator.popup
+        self.assertFalse(popup.isWindow())  # no window of its own to flicker or switch Spaces
+        self.assertTrue(popup.isVisible())
+        self.assertGreaterEqual(popup.y(), 0)
+        app.sendEvent(popup, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+        self.assertFalse(popup.isVisible())
+        indicator.toggle_popup()
+        popup = indicator.popup
+        press = QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress, QPointF(5, 5), outside.mapToGlobal(QPointF(5, 5)),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+        )
+        app.sendEvent(outside, press)
+        self.assertFalse(popup.isVisible())
+        window.close()

@@ -13,8 +13,9 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QPoint, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFrame,
     QHBoxLayout,
@@ -373,12 +374,15 @@ class ActivityIndicator(QWidget):
         if self.popup and self.popup.isVisible():
             self.popup.close()
             return
+        if self.popup is not None:
+            self.popup.deleteLater()
         self.popup = ActivityPopup(self)
         self._sample(detailed=True)  # full readings before it shows, so it opens at its final size
         self.popup.refresh()
-        anchor = self.mapToGlobal(QPoint(self.width(), 0))
-        self.popup.move(anchor.x() - self.popup.width(), anchor.y() - self.popup.height() - 6)
+        anchor = self.mapTo(self.window(), QPoint(self.width(), 0))
+        self.popup.move(anchor.x() - self.popup.width() - 6, anchor.y() - self.popup.height() - 6)
         self.popup.show()
+        self.popup.raise_()
 
     def _sample(self, detailed: bool = False) -> None:
         busy = self.jobs.busy
@@ -439,10 +443,16 @@ class ActivityIndicator(QWidget):
 
 
 class ActivityPopup(QFrame):
-    """Details: current job, queue, resource use, battery rules."""
+    """Details: current job, queue, resource use, battery rules.
+
+    A panel inside the main window, not a popup window of its own: in a full-screen
+    window on macOS a separate popup window can switch Spaces, and every resize of one
+    redraws natively, which made it flicker. It still closes like a popover: Esc, or
+    a click anywhere outside it.
+    """
 
     def __init__(self, indicator: ActivityIndicator):
-        super().__init__(indicator, Qt.WindowType.Popup)
+        super().__init__(indicator.window())
         self.setObjectName("activityPopup")
         self.indicator = indicator
         self.jobs, self.settings = indicator.jobs, indicator.settings
@@ -528,6 +538,26 @@ class ActivityPopup(QFrame):
         layout.addWidget(_rule())
         layout.addWidget(self.history)
         self.refresh()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QApplication.instance().installEventFilter(self)
+        self.setFocus()
+
+    def hideEvent(self, event) -> None:
+        QApplication.instance().removeEventFilter(self)
+        super().hideEvent(event)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget):
+            inside = QRect(self.mapToGlobal(QPoint(0, 0)), self.size()).contains(event.globalPosition().toPoint())
+            on_label = obj is self.indicator.label  # its own click toggles it shut
+            if not inside and not on_label:
+                self.close()
+        elif event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            self.close()
+            return True
+        return False
 
     def _save_rules(self) -> None:
         self.settings.battery_pause_below = self.threshold.value() if self.low_battery.isChecked() else 0
@@ -634,8 +664,7 @@ class ActivityPopup(QFrame):
     def _fit(self) -> None:
         """Resize only when the content needs another size, growing upwards from the status bar.
 
-        This runs on every reading; resizing a shown popup each time (even back to the same
-        size) makes the native window flicker. adjustSize alone settles a line short of what
+        This runs on every reading, so it leaves the geometry alone unless it must change. adjustSize alone settles a line short of what
         the wrapped labels need, so the height comes from the layout at the actual width.
         """
         width = max(self.minimumWidth(), self.sizeHint().width())
