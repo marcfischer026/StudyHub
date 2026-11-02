@@ -33,6 +33,11 @@ from typing import TYPE_CHECKING, Callable
 
 import pymupdf
 
+try:
+    import psutil
+except ImportError:  # optional: helper servers are then left to exit on their own
+    psutil = None
+
 from .. import config
 from . import pdf_conversion
 from .jobcontrol import JobControl
@@ -62,6 +67,28 @@ class ConverterError(RuntimeError):
 
 def converters_dir() -> Path:
     return config.data_root() / "converters"
+
+
+def stop_helpers() -> int:
+    """Marker starts model servers in process groups of their own that outlive it. Ends every
+    process still running from the converters folder; returns how many."""
+    if psutil is None:
+        return 0
+    folder, stopped = str(converters_dir()), []
+    for proc in psutil.process_iter(["cmdline"]):
+        if any(folder in part for part in proc.info["cmdline"] or ()):
+            try:
+                proc.terminate()
+                stopped.append(proc)
+            except psutil.Error:
+                pass
+    _gone, alive = psutil.wait_procs(stopped, timeout=5)
+    for proc in alive:
+        try:
+            proc.kill()
+        except psutil.Error:
+            pass
+    return len(stopped)
 
 
 def executable(engine: str) -> Path:
@@ -304,6 +331,13 @@ def convert_subject(view: "SubjectView", control: JobControl | None = None, prog
     stop or an error keeps what was finished."""
     if not installed():
         raise ConverterError("The local converters are not installed. See README → Local PDF conversion.")
+    try:
+        return _convert_documents(view, control, progress)
+    finally:
+        stop_helpers()
+
+
+def _convert_documents(view: "SubjectView", control: JobControl | None, progress: Progress) -> pdf_conversion.ConversionReport:
     total = pdf_conversion.ConversionReport()
     figures = view.subject.converted_dir / "figures"
     for document in view.documents:

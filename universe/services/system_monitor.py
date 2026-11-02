@@ -11,6 +11,8 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
+from .. import config
+
 try:
     import psutil
 except ImportError:  # optional: the indicator then only shows job progress
@@ -39,7 +41,7 @@ class Snapshot:
     gpu_mem_gb: float | None = None  # unified memory held by the GPU (models live here)
     battery: int | None = None  # percent, None on desktops
     plugged: bool | None = None
-    processes: list[ProcessUsage] = field(default_factory=list)  # UniVerse, whisper, AI server
+    processes: list[ProcessUsage] = field(default_factory=list)  # UniVerse, whisper, PDF converter, AI server
 
 
 class SystemMonitor:
@@ -77,15 +79,19 @@ class SystemMonitor:
         return snap
 
     def _watched_processes(self) -> list[ProcessUsage]:
-        groups: dict[str, list] = {"UniVerse": [], "whisper.cpp": [], "Local AI server": []}
+        groups: dict[str, list] = {"UniVerse": [], "whisper.cpp": [], "PDF converter": [], "Local AI server": []}
         me = os.getpid()
-        for proc in psutil.process_iter(["pid", "name", "exe"]):
+        # Marker and MinerU, with the helper servers they start, all run from the converters folder.
+        converters = str(config.data_root() / "converters")
+        for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
             info = proc.info
             name, exe = (info["name"] or ""), (info["exe"] or "")
             if info["pid"] == me:
                 groups["UniVerse"].append(proc)
             elif name.startswith("whisper"):
                 groups["whisper.cpp"].append(proc)
+            elif any(converters in part for part in info["cmdline"] or ()):
+                groups["PDF converter"].append(proc)
             elif any(h in exe.lower() or h in name.lower() for h in _AI_SERVER_HINTS):
                 groups["Local AI server"].append(proc)
         usage = []

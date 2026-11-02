@@ -160,5 +160,40 @@ class ConvertTests(Fixture):
         self.assertIn("out of memory", report.problems[0])
 
 
+class HelperTests(unittest.TestCase):
+    def test_only_processes_from_the_converters_folder_are_stopped(self):
+        folder = str(local_conversion.converters_dir())
+        server = mock.Mock(info={"cmdline": [f"{folder}/marker/bin/python", "-m", "surya.fast_layout.server"]})
+        other = mock.Mock(info={"cmdline": ["/opt/homebrew/bin/llama-server", "-m", "qwen.gguf"]})
+        fake = mock.Mock(Error=Exception, process_iter=lambda attrs: [server, other], wait_procs=lambda procs, timeout: ([], procs))
+        with mock.patch.object(local_conversion, "psutil", fake):
+            self.assertEqual(local_conversion.stop_helpers(), 1)
+        server.terminate.assert_called_once()
+        server.kill.assert_called_once()  # still alive after the wait
+        other.terminate.assert_not_called()
+
+    def test_the_activity_view_shows_converters_apart_from_the_local_ai_server(self):
+        from universe.services import system_monitor
+
+        folder = str(local_conversion.converters_dir())
+
+        def proc(pid, name, cmdline):
+            p = mock.Mock(pid=pid, info={"pid": pid, "name": name, "exe": cmdline[0], "cmdline": cmdline})
+            p.cpu_percent.return_value, p.memory_info.return_value = 50.0, mock.Mock(rss=2**30)
+            return p
+
+        procs = [
+            proc(1, "llama-server", ["/opt/homebrew/bin/llama-server", "-m", f"{folder}/hf/surya.gguf"]),
+            proc(2, "python3.12", [f"{folder}/marker/bin/python", f"{folder}/marker/bin/marker_single"]),
+            proc(3, "llama-server", ["/opt/homebrew/bin/llama-server", "-m", "qwen.gguf"]),
+        ]
+        monitor = system_monitor.SystemMonitor.__new__(system_monitor.SystemMonitor)
+        monitor._procs = {}
+        with mock.patch.object(system_monitor, "psutil", mock.Mock(process_iter=lambda attrs: procs)):
+            usage = {u.name: u for u in monitor._watched_processes()}
+        self.assertEqual(usage["PDF converter"].ram_gb, 2.0)
+        self.assertEqual(usage["Local AI server"].ram_gb, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
