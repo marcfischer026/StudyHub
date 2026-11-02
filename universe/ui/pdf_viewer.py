@@ -210,7 +210,12 @@ class PdfViewer(QWidget):
                 )
             )
 
+        # Full and short labels: the short ones keep every tool reachable in a narrow panel.
+        self._labels = ((self.snipper, "✂ Snip", "✂"), (self.highlighter, "Mark", ""), (self.eraser, "⌫ Unmark", "⌫"), (fit, "Fit", "↔"))
+        self._compact = False
+
         nav = QHBoxLayout()
+        nav.setSpacing(2)
         for w in (self.prev_btn, self.page, self.page_count, self.next_btn):
             nav.addWidget(w)
         nav.addStretch()
@@ -248,6 +253,25 @@ class PdfViewer(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addLayout(nav)
         layout.addWidget(self.scroll, 1)
+        self._nav = nav
+        self._full_width = nav.sizeHint().width() + 8
+        self._set_compact(True)  # the narrow size is the minimum; resizeEvent widens the labels
+        nav.invalidate()  # forget the size measured with the full labels
+        self.setMinimumWidth(layout.minimumSize().width())
+
+    def _set_compact(self, compact: bool) -> None:
+        if compact == self._compact:
+            return
+        self._compact = compact
+        for button, full, short in self._labels:
+            button.setText(short if compact else full)
+        self.highlighter.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly if compact else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._set_compact(event.size().width() < self._full_width)
 
     # --- file ---------------------------------------------------------------
 

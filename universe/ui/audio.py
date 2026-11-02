@@ -445,10 +445,10 @@ class PlayerBar(QWidget):
         self.time = QLabel("0:00 / 0:00")
         self.time.setObjectName("muted")
         self.files = QComboBox()
-        self.files.setMinimumContentsLength(14)
+        self.files.setMinimumContentsLength(8)
         self.files.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.files.activated.connect(lambda i: audio.select(Path(self.files.itemData(i))))
-        self.empty = QLabel("No recordings yet — press ● Record in the toolbar, or import audio in the Recordings panel.")
+        self.empty = QLabel(wordWrap=True)  # text in _refresh
         self.empty.setObjectName("muted")
 
         layout = QHBoxLayout(self)
@@ -476,7 +476,7 @@ class PlayerBar(QWidget):
         self.empty.setText(
             "Recording… it will appear here when you press ■ Stop."
             if self.audio.recording
-            else "No recordings yet — press ● Record in the toolbar, or import audio in the Recordings panel."
+            else "No recordings yet — press ● Record in the toolbar, or drop an audio file anywhere in the window."
         )
         self.files.blockSignals(True)
         self.files.clear()
@@ -558,7 +558,8 @@ class RecordingsPanel(QWidget):
             shortcut = QShortcut(key, self.list, context=Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(self._delete)
 
-        import_btn = QPushButton("Import audio…")
+        import_btn = QPushButton("Import…")
+        import_btn.setToolTip("Import audio files — or drop them anywhere in the window")
         import_btn.clicked.connect(self._import)
         self.delete_btn = QPushButton("Delete…")
         self.delete_btn.setToolTip("Move the selected recordings and their transcripts to the Trash (⌫)")
@@ -566,13 +567,16 @@ class RecordingsPanel(QWidget):
         self.transcribe_btn = QPushButton("Transcribe")
         self.transcribe_btn.setObjectName("primaryButton")
         self.transcribe_btn.clicked.connect(self._transcribe)
-        self.auto = QCheckBox("Transcribe automatically after recording")
+        self.auto = QCheckBox("Auto-transcribe")
+        self.auto.setToolTip("Transcribe automatically after recording")
         self.auto.setChecked(audio.settings.auto_transcribe)
         self.auto.toggled.connect(self._set_auto)
         self.progress = QProgressBar(maximum=100)
         self.progress.hide()
 
         self.language = QComboBox()
+        self.language.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.language.setMinimumContentsLength(8)
         for code, label in LANGUAGES:
             self.language.addItem(label, code)
         self.language.setToolTip(
@@ -581,6 +585,8 @@ class RecordingsPanel(QWidget):
         )
         self.language.activated.connect(self._set_language)
         self.model = QComboBox()
+        self.model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.model.setMinimumContentsLength(8)
         self.model.setToolTip("Speech model (in ~/.universe_data/models). Models ending in .en only understand English.")
         self.model.activated.connect(self._set_model)
         self.hint = QLabel(wordWrap=True)

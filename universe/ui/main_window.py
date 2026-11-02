@@ -7,9 +7,10 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QFile, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QFile, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QInputDialog,
     QMainWindow,
@@ -26,9 +27,10 @@ from PySide6.QtWidgets import (
 from ..config import Settings
 from ..professors import ProfessorStore
 from ..services import local_llm, moodle_ical, relevance, transcriber
+from ..services.pdf_tools import guess_kind
 from ..services.subject_model import load_subject, locate
 from ..services.vector_index import SubjectIndex, get_embedder
-from ..storage import Lecture, Subject, Workspace, clock_time
+from ..storage import AUDIO_SUFFIXES, DOC_TYPES, Lecture, Subject, Workspace, clock_time
 from . import workers
 from .ai_panel import AIPanel, hit_target
 from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, open_mic_privacy_settings
@@ -46,6 +48,13 @@ from .workers import Worker
 
 # Bump when the default dock arrangement changes, so stale saved layouts are ignored.
 STATE_VERSION = 3
+DRAG_EVENTS = (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop)
+
+
+def dropped_files(mime) -> list[Path]:
+    """The PDFs and audio files in a drag from Finder; nothing for anything else."""
+    paths = [Path(url.toLocalFile()) for url in mime.urls() if url.isLocalFile()] if mime.hasUrls() else []
+    return [p for p in paths if p.suffix.lower() in AUDIO_SUFFIXES | {".pdf"} and p.is_file()]
 
 
 class MainWindow(QMainWindow):
@@ -119,6 +128,9 @@ class MainWindow(QMainWindow):
         self._connect()
 
         self._restore_state()
+        # PDFs and audio can be dropped anywhere in the window, panels included.
+        self.setAcceptDrops(True)
+        QApplication.instance().installEventFilter(self)
         self.center.setVisible(self.settings.notes_visible)
         self.open_lecture(None)
         self.sidebar.select_by_name(settings.last_subject, settings.last_lecture)
@@ -403,6 +415,59 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Import", "Pick or create a subject in Subjects first.")
             return None
         return subject.dir(kind)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() not in DRAG_EVENTS or not isinstance(obj, QWidget):
+            return False
+        window = obj.window()
+        if window is not self and window not in self.docks.values():  # dialogs and floating docks of their own
+            return False
+        paths = dropped_files(event.mimeData())
+        if not paths:
+            return False  # e.g. recordings dragged onto the sidebar
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        if event.type() == QEvent.Type.DragEnter:
+            where = f"“{self.lecture.name}”" if self.lecture else "a new lecture"
+            self.statusBar().showMessage(f"Drop to add to {where} — PDFs are sorted into slides, past exams or tasks.", 3000)
+        elif event.type() == QEvent.Type.Drop:
+            # Not inside the drop: dialogs would block Finder, which the file came from.
+            QTimer.singleShot(0, lambda: self.import_dropped(paths))
+        return True
+
+    def import_dropped(self, paths: list[Path]) -> None:
+        """Sort dropped files into the open lecture (a new one if none is open):
+        audio to its recordings, PDFs as slides, past exams or tasks by their name."""
+        audio = [p for p in paths if p.suffix.lower() in AUDIO_SUFFIXES]
+        pdfs: dict[str, list[Path]] = {}
+        for path in paths:
+            if path.suffix.lower() == ".pdf":
+                pdfs.setdefault(guess_kind(path), []).append(path)
+        lecture = self.ensure_lecture(paths[0].stem) if audio or "slides" in pdfs else self.lecture
+        if (audio or "slides" in pdfs) and lecture is None:
+            return
+        added = []  # (what, where)
+        if audio:
+            self.audio.import_files(audio)
+            self.docks["recordings"].show()
+            added.append((f"{len(audio)} recording{'s' * (len(audio) != 1)}", f"{lecture.subject.name} › {lecture.name}"))
+        for kind, files in pdfs.items():
+            self.documents.import_paths(files, kind)
+            if kind == "slides":
+                where = f"{lecture.subject.name} › {lecture.name}"
+            else:  # past exams and tasks belong to the whole subject
+                subject = self.subject or self.sidebar.current_subject()
+                if subject is None:
+                    continue  # import_paths has said to pick a subject
+                where = subject.name
+            added.append((f"{len(files)} × {DOC_TYPES[kind]}", where))
+        if pdfs:
+            self.docks["documents"].show()
+            self.docks["documents"].raise_()
+        elif audio:
+            self.docks["recordings"].raise_()
+        if added:
+            self.statusBar().showMessage("Added " + "; ".join(f"{what} to {where}" for what, where in added) + ".", 8000)
 
     def ensure_lecture(self, name_hint: str = "") -> Lecture | None:
         """The open lecture — or, when none is open, a new one so a recording or

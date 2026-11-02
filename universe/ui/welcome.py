@@ -7,6 +7,7 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -56,7 +57,7 @@ class WelcomePage(QWidget):
         super().__init__(parent)
         self.workspace = workspace
 
-        self.title = QLabel()
+        self.title = QLabel(wordWrap=True)
         self.title.setObjectName("welcomeTitle")
         self.subtitle = QLabel(wordWrap=True)
         self.subtitle.setObjectName("welcomeSubtitle")
@@ -65,7 +66,7 @@ class WelcomePage(QWidget):
 
         self.steps = QWidget()
         self.steps.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        steps = QHBoxLayout(self.steps)
+        steps = self._steps = QBoxLayout(QBoxLayout.Direction.LeftToRight, self.steps)  # stacked when narrow
         steps.setContentsMargins(0, 0, 0, 0)
         steps.setSpacing(12)
         steps.addWidget(_card("1 · Create a subject", "One per course — Corporate Finance, Physics, anything."))
@@ -94,7 +95,7 @@ class WelcomePage(QWidget):
         self.record.setObjectName("recordButton")
         self.record.clicked.connect(self.quickRecord)
 
-        buttons = QHBoxLayout()
+        buttons = self._buttons = QBoxLayout(QBoxLayout.Direction.LeftToRight)  # stacked when narrow
         buttons.addWidget(self.primary)
         buttons.addWidget(self.record)
         buttons.addStretch()
@@ -113,15 +114,22 @@ class WelcomePage(QWidget):
         column.addStretch()
 
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(40, 36, 40, 24)
+        outer.setContentsMargins(16, 24, 16, 24)
         holder = QWidget()
         holder.setLayout(column)
         holder.setMaximumWidth(760)
+        holder.setMinimumWidth(160)  # rows side by side must not stop the window narrowing; resizeEvent stacks them
         outer.addWidget(holder, 1)
         outer.addStretch(0)
 
         self.subject: Subject | None = None
         self.show_subject(None)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        narrow = event.size().width() < 640
+        for row in (self._steps, self._buttons):
+            row.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
 
     def set_events(self, events: list[moodle_ical.Event]) -> None:
         """Moodle calendar events; the page shows the upcoming ones that fit the current view."""
@@ -220,9 +228,9 @@ class LectureView(QWidget):
     def __init__(self, notes: NoteEditor, player: PlayerBar, professors: ProfessorStore, parent=None):
         super().__init__(parent)
         self.professors = professors
-        self.title = QLabel()
+        self.title = QLabel(wordWrap=True)
         self.title.setObjectName("lectureTitle")
-        self.meta = QLabel()
+        self.meta = QLabel(wordWrap=True)
         self.meta.setObjectName("muted")
         self.meta.linkActivated.connect(lambda _href: self.assignProfessor.emit())
 

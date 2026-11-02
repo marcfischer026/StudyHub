@@ -55,6 +55,40 @@ def unlock(path: Path, password: str) -> bool:
     return True
 
 
+# What a dropped PDF is, by its name or first page; anything else counts as slides.
+KIND_WORDS = {
+    "exams": r"(alt|probe)?klausur|exams?(?![a-z])|midterm|pr(ü|ue)fung",
+    "slides": r"vorlesung|folien|slides|lecture|skript",  # "Vorlesung Übung 3" is slides
+    "exercises": r"(ü|ue)bung|aufgabe|(ü|ue)bungsblatt|blatt|exercise|tutori(al|um)|problem.?set|assignment|homework|worksheet|sheet",
+}
+FIRST_PAGE_WORDS = {  # only titles: slides may name the course's tutorial ("Vorlesung & Übung")
+    "exams": r"(alt|probe)?klausur|exams?(?![a-z])|matrikel(nummer|nr)",
+    "exercises": r"(ü|ue)bungsblatt|aufgabenblatt|exercise sheet|problem set|assignment|homework",
+}
+
+
+def _kind_in(text: str, words: dict[str, str]) -> str:
+    text = text.lower().replace("_", " ").replace("-", " ")
+    for kind, pattern in words.items():  # in order: "Lösungen Probeklausur" is an exam
+        if re.search(rf"(?<![a-zäöü])({pattern})", text):
+            return kind
+    return ""
+
+
+def guess_kind(path: Path) -> str:
+    """The folder a PDF belongs in — "slides", "exams" or "exercises" — from its
+    file name, else the start of its first page."""
+    kind = _kind_in(path.stem, KIND_WORDS)
+    if kind:
+        return kind  # "slides" too: a slide deck named so is not looked into
+    try:
+        with pymupdf.open(path) as doc:
+            first = doc[0].get_text("text")[:400] if doc.page_count and not doc.needs_pass else ""
+    except Exception:
+        first = ""
+    return _kind_in(first, FIRST_PAGE_WORDS) or "slides"
+
+
 def page_texts(path: Path) -> list[str]:
     """Plain text of every page, in order."""
     with pymupdf.open(path) as doc:

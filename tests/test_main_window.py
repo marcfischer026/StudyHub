@@ -18,6 +18,7 @@ import universe  # noqa: E402,F401
 from universe.config import Settings  # noqa: E402
 from universe.ui.main_window import MainWindow  # noqa: E402  (before PySide6: lancedb fails to import after it on Python 3.15)
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
@@ -62,6 +63,27 @@ class SwitchingWhileRecordingTests(unittest.TestCase):
         self.window.sidebar.refresh(select=self.lecture)
         self.assertIsNone(self.window.audio.player.path)
         self.message_box.warning.assert_not_called()
+
+
+class NarrowWindowTests(unittest.TestCase):
+    """The window fits half a laptop screen (macOS Split View) with every panel open."""
+
+    def test_default_layout_fits_half_a_screen(self):
+        window = MainWindow(Settings())
+        self.addCleanup(window.deleteLater)
+        lecture = window.workspace.create_subject("Narrow").create_lecture("Week 1")
+        window.sidebar.refresh(select=lecture)
+        window.show()
+        self.addCleanup(window.hide)
+        window.resize(700, 800)
+        app.processEvents()
+        self.assertLessEqual(window.width(), 700)
+        viewer = window.documents.viewer
+        self.assertEqual(viewer.snipper.text(), "✂")  # short labels, every tool still there
+        window.resize(1600, 900)
+        window.resizeDocks([window.docks["documents"]], [700], Qt.Orientation.Horizontal)
+        app.processEvents()
+        self.assertEqual(viewer.snipper.text(), "✂ Snip")
 
 
 if __name__ == "__main__":

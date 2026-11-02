@@ -19,7 +19,8 @@ from universe.config import Settings  # noqa: E402
 from universe.ui.main_window import MainWindow  # noqa: E402  (before PySide6: lancedb fails to import after it on Python 3.15)
 
 import pymupdf  # noqa: E402
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl  # noqa: E402
+from PySide6.QtGui import QDragEnterEvent, QDropEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget  # noqa: E402
 
@@ -375,6 +376,75 @@ class MainWindowTests(unittest.TestCase):
         self.window.documents.import_paths([source], "slides")
         self.assertEqual(self.window.lecture.name, "Neue Folien")
         self.assertEqual(self.window.documents.viewer.path.name, "Neue Folien.pdf")
+
+
+class DropTests(unittest.TestCase):
+    """PDFs and audio dropped anywhere in the window land in the open lecture, sorted."""
+
+    def setUp(self):
+        patcher = mock.patch("universe.ui.main_window.QMessageBox")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.window = MainWindow(Settings())
+        self.addCleanup(self.window.deleteLater)
+        name = self.id().rsplit(".", 1)[-1]
+        self.subject = self.window.workspace.create_subject(name)
+        self.lecture = self.subject.create_lecture("Week 1")
+        self.window.sidebar.refresh(select=self.lecture)
+        self.source = Path(tempfile.mkdtemp())
+
+    def drop_on(self, widget: QWidget, paths: list[Path]) -> bool:
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+        actions = Qt.DropAction.CopyAction
+        enter = QDragEnterEvent(QPoint(5, 5), actions, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        drop = QDropEvent(QPointF(5, 5), actions, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        accepted = self.window.eventFilter(widget, enter) and enter.isAccepted()
+        self.window.eventFilter(widget, drop)
+        QApplication.processEvents()  # the import runs once the drop is over
+        return accepted
+
+    def test_pdfs_are_sorted_by_name(self):
+        files = [
+            make_pdf(self.source / "VL03 Kapitalkosten.pdf"),
+            make_pdf(self.source / "Altklausur WS23.pdf"),
+            make_pdf(self.source / "Übungsblatt 4.pdf"),
+        ]
+        self.assertTrue(self.drop_on(self.window.notes.edit, files))
+        self.assertEqual([p.name for p in pdf_tools_list(self.lecture.dir("slides"))], ["VL03 Kapitalkosten.pdf"])
+        self.assertEqual([p.name for p in pdf_tools_list(self.subject.dir("exams"))], ["Altklausur WS23.pdf"])
+        self.assertEqual([p.name for p in pdf_tools_list(self.subject.dir("exercises"))], ["Übungsblatt 4.pdf"])
+        message = self.window.statusBar().currentMessage()
+        self.assertIn("1 × Slides to", message)
+        self.assertIn("1 × Past exam to", message)
+
+    def test_audio_goes_to_the_recordings_from_any_panel(self):
+        audio = self.source / "Lecture.m4a"
+        audio.write_bytes(b"not really audio")
+        with mock.patch.object(self.window.audio, "select"):  # no decoding in the test
+            self.assertTrue(self.drop_on(self.window.documents.list.viewport(), [audio]))
+        self.assertEqual([p.name for p in self.lecture.dir("audio").iterdir()], ["Lecture.m4a"])
+
+    def test_other_files_and_internal_drags_are_left_alone(self):
+        text = self.source / "notes.txt"
+        text.write_text("x")
+        self.assertFalse(self.drop_on(self.window.sidebar, [text]))
+
+    def test_first_page_decides_when_the_name_says_nothing(self):
+        exam = make_pdf(self.source / "scan_0042.pdf", text="Klausur Corporate Finance")
+        sheet = make_pdf(self.source / "doc1.pdf", text="Problem Set 3")
+        deck = make_pdf(self.source / "doc2.pdf", text="Vorlesung & Uebung: Intro")
+        self.assertEqual(pdf_tools.guess_kind(exam), "exams")
+        self.assertEqual(pdf_tools.guess_kind(sheet), "exercises")
+        self.assertEqual(pdf_tools.guess_kind(deck), "slides")
+
+    def test_names_that_merely_contain_a_keyword_stay_slides(self):
+        for name in ("examples.pdf", "VL 3 Vorlesung Übung.pdf", "Lecture 4 Homework.pdf"):
+            self.assertEqual(pdf_tools.guess_kind(self.source / name), "slides", name)
+
+
+def pdf_tools_list(folder: Path) -> list[Path]:
+    return sorted(folder.glob("*.pdf"))
 
 
 class FlowLayoutTests(unittest.TestCase):
