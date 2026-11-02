@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QByteArray, QSize, Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget
 
-from . import icons, style
+from . import icons, motion, style
 
 PARTS = ("sidebar", "notes", "documents", "inspector")
 STEP_ASIDE = ("inspector", "sidebar", "documents", "notes")  # first steps aside first in a narrow window
@@ -67,7 +67,7 @@ class Inspector(QWidget):
 
     def add_pane(self, key: str, title: str, widget: QWidget, icon: str) -> None:
         button = QToolButton(objectName="segment", text=title, checkable=True, toolTip=title)
-        button.setIcon(icons.icon(icon, on_color=style.tokens().accent))
+        button.setIcon(icons.icon(icon, on_color=icons.ACCENT))
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.group.addButton(button, len(self.keys))
         self.segments.insertWidget(self.segments.count() - 1, button)
@@ -81,7 +81,7 @@ class Inspector(QWidget):
         index = self.keys.index(key)
         self.group.button(index).setChecked(True)
         if self.stack.currentIndex() != index:
-            self.stack.setCurrentIndex(index)
+            motion.crossfade(self.stack, lambda: self.stack.setCurrentIndex(index))
             self.paneChanged.emit(key)
 
     def current(self) -> str:
@@ -134,11 +134,13 @@ class Workbench(QSplitter):
 
     def set_shown(self, part: str, visible: bool) -> None:
         """Show or hide a part because the user asked to."""
+        if self.wanted[part] == visible and self.is_shown(part) == visible:
+            return
         self.wanted[part] = visible
         if visible:  # asked for last: the last to give way
             self.priority.remove(part)
             self.priority.append(part)
-        self._fit()
+        motion.crossfade(self, self._fit)
 
     def show_pane(self, key: str) -> None:
         """Bring an inspector pane to the front, opening the inspector if needed."""
@@ -161,16 +163,13 @@ class Workbench(QSplitter):
         self.saved[self.mode] = self._snapshot()
         self.mode = key
         fresh = key not in self.saved
-        if fresh:
-            self._apply_preset(key)
-        else:
-            self._restore_snapshot(self.saved[key])
+        motion.crossfade(self, lambda: self._apply_preset(key) if fresh else self._restore_snapshot(self.saved[key]))
         self.modeChanged.emit(key, fresh)
 
     def reset_mode(self) -> None:
         """Forget your changes to the current mode."""
         self.saved.pop(self.mode, None)
-        self._apply_preset(self.mode)
+        motion.crossfade(self, lambda: self._apply_preset(self.mode))
         self.modeChanged.emit(self.mode, True)
 
     def _apply_preset(self, key: str) -> None:

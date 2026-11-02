@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QGuiApplication,
     QImage,
     QKeySequence,
     QSyntaxHighlighter,
@@ -57,10 +58,15 @@ class _StampHighlighter(QSyntaxHighlighter):
         super().__init__(document)
         self.pattern = QRegularExpression(timestamps.TIMESTAMP_RE.pattern)
         self.fmt = QTextCharFormat()
-        self.fmt.setForeground(QColor(style.tokens().accent))
         self.fmt.setFontWeight(QFont.Weight.DemiBold)
+        # Light/dark switch while open: colour the stamps again in the new accent.
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)  # a method: dropped with us
+
+    def _scheme_changed(self, _scheme) -> None:
+        QTimer.singleShot(0, self.rehighlight)
 
     def highlightBlock(self, text: str) -> None:
+        self.fmt.setForeground(QColor(style.tokens().accent))
         it = self.pattern.globalMatch(text)
         while it.hasNext():
             m = it.next()

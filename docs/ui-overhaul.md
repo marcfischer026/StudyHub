@@ -116,13 +116,23 @@ Compact chrome, comfortable content:
 
 ## Motion
 
-Subtle but present, always for a reason:
+Subtle but present, always for a reason (`universe/ui/motion.py`):
 
-- Pane/mode switch: 150 ms cross-fade of the changing column.
-- Sidebar and inspector collapse: 180 ms width animation, ease-out.
-- Recording start: record button colour change 120 ms; level meter is live, not animated.
+- Switching a mode or an inspector pane, or showing/hiding a part: a 150 ms cross-fade from
+  a snapshot of the old look. Only that snapshot is animated, never the panes.
+- No fade when parts step aside during a window resize: that would flicker.
+- Not built, on purpose: a width animation for sidebar/inspector (the splitter's minimum
+  widths make it jumpy) and a colour fade on the record button (stylesheets can't animate).
 - No hover-grow, no fade-in on lists, no looping animation.
-- macOS "Reduce motion" turns all of it off.
+- macOS "Reduce motion" turns all of it off; "Reduce transparency" turns glass into solid
+  surfaces.
+
+## Light and dark
+
+- Switching macOS appearance while UniVerse runs rebuilds the stylesheet with the new tokens.
+- Icons look their colour up when they are painted (a custom `QIconEngine`), so they follow
+  the switch by themselves: text colour, accent, muted when disabled, white on selected rows.
+- Timestamps in notes take the new accent too.
 
 ## Copy
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -70,6 +71,9 @@ def _mono_family() -> str:
 
 
 def _is_dark() -> bool:
+    scheme = QGuiApplication.styleHints().colorScheme()
+    if scheme != Qt.ColorScheme.Unknown:  # macOS tells us; the palette may lag behind a switch
+        return scheme == Qt.ColorScheme.Dark
     return QGuiApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
 
@@ -132,6 +136,8 @@ def stylesheet(t: Tokens | None = None) -> str:
         border: none; border-radius: {s}px; padding: 4px; background: transparent;
     }}
     QToolButton#chromeToggle:hover {{ background: {t.hover}; }}
+    QToolButton#sidebarAction {{ border: none; border-radius: {s}px; padding: 4px 8px; background: transparent; }}
+    QToolButton#sidebarAction:hover {{ background: {t.hover}; }}
     QTabBar::tab {{ padding: 4px 12px; }}
 
     QPushButton#recordButton {{
@@ -196,3 +202,6 @@ def stylesheet(t: Tokens | None = None) -> str:
 
 def apply(app: QApplication) -> None:
     app.setStyleSheet(stylesheet())
+    # Switching macOS between light and dark while the app runs: rebuild with the new tokens.
+    # Icons look their colour up when painted, so they follow by themselves.
+    app.styleHints().colorSchemeChanged.connect(lambda _scheme: QTimer.singleShot(0, lambda: app.setStyleSheet(stylesheet())))

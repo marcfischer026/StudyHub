@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
         for number, (key, mode) in enumerate(MODES.items(), start=1):
             action = QAction(mode.title, self.mode_group, checkable=True)
             action.setShortcut(QKeySequence(f"Ctrl+{number}"))
-            action.setIcon(icons.icon(mode.icon, on_color=style.tokens().accent))
+            action.setIcon(icons.icon(mode.icon, on_color=icons.ACCENT))
             action.setIconVisibleInMenu(False)
             shortcut = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
             action.setToolTip(f"{mode.title}: {mode.hint} ({shortcut})")
@@ -249,11 +249,14 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
     def _toggle_button(self, part: str, icon: str, tip: str) -> QToolButton:
+        # Icon and tooltip on the action: the button copies them back from it on every toggle.
+        action = self.part_actions[part]
+        action.setIcon(icons.icon(icon))
+        action.setIconVisibleInMenu(False)
+        shortcut = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+        action.setToolTip(f"{tip} ({shortcut})")
         button = QToolButton(objectName="chromeToggle")
-        button.setDefaultAction(self.part_actions[part])
-        button.setIcon(icons.icon(icon))
-        shortcut = self.part_actions[part].shortcut().toString(QKeySequence.SequenceFormat.NativeText)
-        button.setToolTip(f"{tip} ({shortcut})")
+        button.setDefaultAction(action)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         return button
 

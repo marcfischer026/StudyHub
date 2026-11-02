@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
-    QPushButton,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -123,14 +123,14 @@ class Sidebar(QWidget):
         self.empty.setObjectName("muted")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        add_subject = QPushButton("Subject")
-        add_subject.setIcon(icons.icon("plus"))
-        add_subject.setToolTip("New subject (⌘⇧N)")
+        # Flat, like the add buttons under a macOS sidebar: push buttons would widen it past half a screen.
+        add_subject = QToolButton(objectName="sidebarAction", text="Subject", toolTip="New subject (⌘⇧N)")
         add_subject.clicked.connect(self.new_subject)
-        add_lecture = QPushButton("Lecture")
-        add_lecture.setIcon(icons.icon("plus"))
-        add_lecture.setToolTip("New lecture in the selected subject (⌘N)")
+        add_lecture = QToolButton(objectName="sidebarAction", text="Lecture", toolTip="New lecture in the selected subject (⌘N)")
         add_lecture.clicked.connect(self.new_lecture)
+        for button in (add_subject, add_lecture):
+            button.setIcon(icons.icon("plus"))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
         buttons = QHBoxLayout()
         buttons.addWidget(add_subject)

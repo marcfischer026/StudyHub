@@ -269,9 +269,9 @@ class TranscriptPanel(QWidget):
         if seg.exam:
             item.setIcon(icons.icon("star", style.WARNING))
         elif seg.category == "question":
-            item.setIcon(icons.icon("circle-help", style.tokens().accent))
+            item.setIcon(icons.icon("circle-help", icons.ACCENT))
         elif seg.category == "answer":
-            item.setIcon(icons.icon("message-circle", style.tokens().accent))
+            item.setIcon(icons.icon("message-circle", icons.ACCENT))
         elif seg.category == "off_topic":
             item.setIcon(icons.icon("volume-x", style.NEUTRAL))
         else:
