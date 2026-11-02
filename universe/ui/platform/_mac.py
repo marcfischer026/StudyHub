@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import objc
 from AppKit import (
+    NSColor,
     NSMakeRect,
     NSVisualEffectBlendingModeBehindWindow,
     NSVisualEffectStateFollowsWindowActiveState,
     NSVisualEffectView,
 )
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QWidget
 
 MATERIALS = {  # NSVisualEffectMaterial, as the system uses them in its own apps
@@ -59,7 +61,14 @@ class _Tracker(QObject):
         self.sync()
 
     def eventFilter(self, obj, event) -> bool:
-        if event.type() in _TRACKED:
+        if event.type() == QEvent.Type.Paint and obj is self.widget:
+            # A see-through window keeps old pixels where nothing opaque is painted:
+            # wipe the glass area first, or earlier layouts show through as ghosts.
+            painter = QPainter(self.widget)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+            painter.fillRect(event.rect(), Qt.GlobalColor.transparent)
+            painter.end()
+        elif event.type() in _TRACKED:
             self.sync()
         return False
 
@@ -77,6 +86,11 @@ class _Tracker(QObject):
         content = self._content_view()
         if content is None or content.superview() is None:
             return  # window not shown yet; the Show event syncs again
+        window = content.window()
+        if window.backgroundColor() != NSColor.clearColor():
+            # macOS paints the window's background colour behind everything; the blur
+            # can only show what is behind the window if that colour is clear.
+            window.setBackgroundColor_(NSColor.clearColor())
         if self.view is None:
             host = self._host(content)
             if host is None:  # an older macOS without one: solid, never a see-through hole
