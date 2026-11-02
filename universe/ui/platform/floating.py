@@ -15,7 +15,7 @@ from typing import Callable
 
 from PySide6.QtCore import SignalInstance
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QAbstractButton, QWidget
+from PySide6.QtWidgets import QAbstractButton, QSlider, QWidget
 
 
 # How much an item wants to stay when the capsule is narrower than everything (the
@@ -25,7 +25,7 @@ MUST, HIGH, LOW = 1000, 750, 250
 
 @dataclass
 class Button:
-    symbol: str  # SF Symbol name
+    symbol: str | Callable[[], str]  # SF Symbol name, or a function for one that changes (play/pause)
     mirror: QAbstractButton  # clicking the glass button clicks this; its checked/enabled/tooltip show
     keep: int = HIGH
 
@@ -45,6 +45,14 @@ class Menu:
     tooltip: str
     menu: Callable  # returns the QMenu to pop up
     keep: int = LOW
+
+
+@dataclass
+class Slider:
+    mirror: QSlider  # range and value come from it
+    released: Callable[[int], None]  # the value where the user let go
+    width: int = 130
+    keep: int = HIGH
 
 
 DIVIDER = "divider"

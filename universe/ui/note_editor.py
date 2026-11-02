@@ -339,6 +339,17 @@ class NoteEditor(QWidget):
 
     # --- lecture binding ----------------------------------------------------
 
+    def set_bottom_room(self, pixels: int) -> None:
+        """Space below the last line, so it can scroll up above controls floating over the notes."""
+        self.bottom_room = pixels
+        self._apply_bottom_room()
+
+    def _apply_bottom_room(self) -> None:
+        frame = self.edit.document().rootFrame()
+        fmt = frame.frameFormat()
+        fmt.setBottomMargin(self.edit.document().documentMargin() + getattr(self, "bottom_room", 0))
+        frame.setFrameFormat(fmt)
+
     def set_lecture(self, lecture: Lecture | None) -> None:
         self.save()
         self.lecture = lecture
@@ -347,6 +358,7 @@ class NoteEditor(QWidget):
         # Figures are linked as "figures/x.png", relative to the lecture folder.
         self.edit.document().setBaseUrl(QUrl.fromLocalFile(f"{lecture.path}/") if lecture else QUrl())
         self.edit.setMarkdown(lecture.read_notes() if lecture else "")
+        self._apply_bottom_room()
         self._size_headings()
         self._fit_images()
         self._restore_anchors(lecture.read_anchors() if lecture else [])

@@ -9,7 +9,9 @@ from AppKit import (
     NSButton,
     NSFont,
     NSGlassEffectView,
+    NSEvent,
     NSObject,
+    NSSlider,
     NSStackView,
     NSTextField,
     NSUserInterfaceLayoutOrientationHorizontal,
@@ -18,7 +20,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint
 from PySide6.QtGui import QCursor
 
 from ._mac_toolbar import _ns_color, _symbol
-from .floating import DIVIDER, LOW, MUST, Button, Menu, Text
+from .floating import DIVIDER, LOW, MUST, Button, Menu, Slider, Text
 
 HEIGHT = 36  # points; the capsule's corners are half of it
 MARGIN = 14  # above the host's bottom edge
@@ -46,6 +48,7 @@ class GlassBar(QObject):
         self.glass = None
         self.target = _Target.alloc().init()
         self._refreshers = []
+        self._layout_key = None  # what the last fitting was for
         widget = host
         while widget is not None:  # a move of any parent (a splitter drag) moves the host on screen
             widget.installEventFilter(self)
@@ -84,6 +87,8 @@ class GlassBar(QObject):
             line = NSBox.alloc().initWithFrame_(((0, 0), (1, 18)))
             line.setBoxType_(NSBoxSeparator)
             return line
+        if isinstance(spec, Slider):
+            return self._slider(tag, spec)
         if isinstance(spec, Text):
             label = NSTextField.labelWithString_("")
             label.setFont_(NSFont.monospacedDigitSystemFontOfSize_weight_(12, 0))
@@ -104,7 +109,8 @@ class GlassBar(QObject):
             for signal in spec.changed:
                 signal.connect(self.refresh)
             return button
-        button = NSButton.buttonWithImage_target_action_(_symbol(spec.symbol, spec.tooltip if isinstance(spec, Menu) else ""), self.target, "clicked:")
+        symbol = spec.symbol if isinstance(spec.symbol, str) else spec.symbol()
+        button = NSButton.buttonWithImage_target_action_(_symbol(symbol, spec.tooltip if isinstance(spec, Menu) else ""), self.target, "clicked:")
         button.setBordered_(False)
         button.setTag_(tag)
         if isinstance(spec, Menu):
@@ -117,7 +123,12 @@ class GlassBar(QObject):
         if mirror.isCheckable():
             mirror.toggled.connect(self.refresh)
 
+        shown_symbol = [symbol]
+
         def refresh() -> None:
+            if not isinstance(spec.symbol, str) and spec.symbol() != shown_symbol[0]:
+                shown_symbol[0] = spec.symbol()
+                button.setImage_(_symbol(shown_symbol[0], ""))
             button.setEnabled_(mirror.isEnabled())
             button.setToolTip_(mirror.toolTip())
             # VoiceOver reads the tool's name, not the symbol's ("scissors").
@@ -127,6 +138,27 @@ class GlassBar(QObject):
 
         self._refreshers.append(refresh)
         return button
+
+    def _slider(self, tag: int, spec: Slider):
+        slider = NSSlider.sliderWithTarget_action_(self.target, "clicked:")
+        slider.setContinuous_(False)  # one seek when you let go, not dozens while dragging
+        slider.setControlSize_(1)  # small
+        slider.setTag_(tag)
+        slider.widthAnchor().constraintEqualToConstant_(spec.width).setActive_(True)
+        slider.setAccessibilityLabel_("Position")
+        if hasattr(slider, "setTrackFillColor_"):
+            slider.setTrackFillColor_(_ns_color("accent"))
+        self.target.handlers[tag] = lambda: spec.released(int(slider.intValue()))
+
+        def refresh() -> None:
+            if NSEvent.pressedMouseButtons() & 1:  # don't pull the knob out from under the pointer
+                return
+            slider.setMinValue_(spec.mirror.minimum())
+            slider.setMaxValue_(max(spec.mirror.maximum(), spec.mirror.minimum() + 1))
+            slider.setIntValue_(spec.mirror.value())
+
+        self._refreshers.append(refresh)
+        return slider
 
     def refresh(self) -> None:
         if self.glass is None:
@@ -144,14 +176,19 @@ class GlassBar(QObject):
         if not shown:
             return
         room = host.width() - 2 * MARGIN
-        # Too narrow for all: leave out what matters least, the later of equals first.
-        for _keep, _tag, view in self.views:
-            view.setHidden_(False)
-        for keep, _tag, view in sorted(self.views, key=lambda v: (v[0], -v[1])):
-            if self.stack.fittingSize().width <= room or keep >= MUST:
-                break
-            view.setHidden_(True)
-        width = min(self.stack.fittingSize().width, room)
+        # Fitting is only redone when the room or a text changed, not on every playback tick.
+        key = (room, tuple(len(spec.text()) for spec in self.items if isinstance(spec, Text)))
+        if key != self._layout_key:
+            self._layout_key = key
+            # Too narrow for all: leave out what matters least, the later of equals first.
+            for _keep, _tag, view in self.views:
+                view.setHidden_(False)
+            for keep, _tag, view in sorted(self.views, key=lambda v: (v[0], -v[1])):
+                if self.stack.fittingSize().width <= room or keep >= MUST:
+                    break
+                view.setHidden_(True)
+            self._width = min(self.stack.fittingSize().width, room)
+        width = self._width
         corner = host.mapTo(host.window(), QPoint(0, 0))  # the window's view is flipped: y down, like Qt
         x = corner.x() + (host.width() - width) / 2
         y = corner.y() + host.height() - HEIGHT - MARGIN

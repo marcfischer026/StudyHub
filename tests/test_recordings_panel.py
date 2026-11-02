@@ -22,7 +22,7 @@ import universe  # noqa: E402,F401
 from universe.config import Settings  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
 from universe.storage import Workspace  # noqa: E402
-from universe.ui.audio import RECORDINGS_MIME, AudioController, RecordingsPanel, recordings_from_mime  # noqa: E402
+from universe.ui.audio import RECORDINGS_MIME, AudioController, PlayerBar, RecordingsPanel, recordings_from_mime  # noqa: E402
 from universe.ui.sidebar import Sidebar  # noqa: E402
 from universe.ui.transcript_panel import ALL_RECORDINGS, TranscriptPanel  # noqa: E402
 
@@ -76,6 +76,43 @@ class RecordingsPanelTests(unittest.TestCase):
         self.assertEqual([a.text() for a in targets], ["Week 2"])  # not the lecture it is already in
         targets[0].trigger()
         self.assertEqual(moves, [(["B.wav"], "Week 2")])
+
+
+class FloatingPlayerTests(unittest.TestCase):
+    """What the glass player (macOS) uses: the files as a menu, and seeking by slider value."""
+
+    def setUp(self):
+        lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Mathe").create_lecture("Week 1")
+        for name in ("A.wav", "B.wav"):
+            (lecture.dir("audio") / name).write_bytes(b"")
+        self.audio = AudioController(Settings())
+        self.audio.lecture = lecture
+        self.bar = PlayerBar(self.audio)
+        self.bar._refresh()
+
+    def test_files_menu_lists_every_recording(self):
+        menu = self.bar.files_menu()
+        self.assertEqual([a.text() for a in menu.actions()], [self.bar.files.itemText(i) for i in range(2)])
+
+    def test_floating_hides_the_strip_when_there_is_something_to_play(self):
+        self.bar.floats = True
+        self.bar._refresh()
+        self.assertTrue(self.bar.has_files())
+        self.assertTrue(self.bar.isHidden())
+        self.assertTrue(self.bar.play_btn.isHidden())
+
+    def test_floating_keeps_the_hint_without_recordings(self):
+        self.audio.lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Bio").create_lecture("Week 1")
+        self.bar.floats = True
+        self.bar._refresh()
+        self.assertFalse(self.bar.has_files())
+        self.assertFalse(self.bar.isHidden())
+
+    def test_seek_to_moves_the_slider(self):
+        self.bar.slider.setRange(0, 1000)
+        self.bar.seek_to(420)
+        self.assertEqual(self.bar.slider.value(), 420)
+        self.assertFalse(self.bar._dragging)
 
 
 class SidebarDropTests(unittest.TestCase):

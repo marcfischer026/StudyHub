@@ -27,9 +27,11 @@ from . import icons
 from .audio import PlayerBar
 from .claude_panel import exam_date
 from .note_editor import NoteEditor
+from .platform import floating
 
 ROLE = Qt.ItemDataRole.UserRole
 DEADLINES_SHOWN = 8
+GLASS_ROOM = 56  # below the last line of notes, for the floating player
 
 
 STACK_BUTTONS_BELOW = 380  # page width at which the two buttons go one under the other
@@ -246,6 +248,28 @@ class LectureView(QWidget):
         layout.addLayout(top)
         layout.addWidget(notes, 1)
         layout.addWidget(player)
+        self._glass = None
+        if floating.available():
+            # macOS 26: playback floats over the bottom of the notes in a Liquid Glass capsule.
+            F = floating
+            audio = player.audio
+            player.floats = True
+            player._refresh()
+            notes.set_bottom_room(GLASS_ROOM)
+            self._glass = F.attach(
+                notes.edit,
+                [
+                    F.Button(lambda: "pause.fill" if audio.player.playing else "play.fill", player.play_btn, keep=F.MUST),
+                    F.Button("gobackward.10", player.back_btn),
+                    F.Button("goforward.10", player.fwd_btn),
+                    F.Slider(player.slider, player.seek_to),
+                    F.Text(player.time.text, changed=[audio.tick]),  # the slider gives way before the time
+                    F.Menu("waveform", "Recording to play", player.files_menu),
+                ],
+                visible=player.has_files,
+            )
+            for signal in (audio.filesChanged, audio.currentChanged):  # the tick already refreshes (time)
+                signal.connect(self._glass.refresh)
 
     def show_lecture(self, lecture: Lecture) -> None:
         self.title.setText(lecture.name)

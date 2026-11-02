@@ -441,6 +441,7 @@ class PlayerBar(QWidget):
         self.setObjectName("playerBar")
         self.audio = audio
         self._dragging = False
+        self.floats = False  # True: the controls float over the notes in glass; only the hint stays here
 
         self.play_btn = QToolButton()
         self.play_btn.setIcon(icons.icon("play"))
@@ -469,6 +470,7 @@ class PlayerBar(QWidget):
         self.empty = QLabel(wordWrap=True)  # text in _refresh
         self.empty.setObjectName("muted")
 
+        self.back_btn, self.fwd_btn = back, fwd
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 4, 12, 4)
         for w in (self.play_btn, back, fwd):
@@ -489,8 +491,9 @@ class PlayerBar(QWidget):
         files = self.audio.files()
         has = bool(files)
         for w in self._controls:
-            w.setVisible(has)
+            w.setVisible(has and not self.floats)
         self.empty.setVisible(not has)
+        self.setVisible(not (has and self.floats))
         self.empty.setText(
             "Recording… it will appear here when you press Stop."
             if self.audio.recording
@@ -504,6 +507,25 @@ class PlayerBar(QWidget):
             self.files.setCurrentIndex(max(0, self.files.findData(str(self.audio.current))))
         self.files.blockSignals(False)
         self.slider.setRange(0, int(self.audio.player.duration * 10))
+
+    def has_files(self) -> bool:
+        return self.files.count() > 0
+
+    def seek_to(self, value: int) -> None:
+        """Seek to a slider value (tenths of a second), e.g. from the glass slider."""
+        self.slider.setValue(value)
+        self._released()
+
+    def files_menu(self) -> QMenu:
+        """The recordings to play, as a menu (the glass capsule has no combo box)."""
+        menu = QMenu(self)
+        for i in range(self.files.count()):
+            action = menu.addAction(self.files.itemText(i))
+            action.setCheckable(True)
+            action.setChecked(i == self.files.currentIndex())
+            path = Path(self.files.itemData(i))
+            action.triggered.connect(lambda _=False, p=path: self.audio.select(p))
+        return menu
 
     def _released(self) -> None:
         self._dragging = False

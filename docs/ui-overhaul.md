@@ -77,6 +77,10 @@ parts lives in View, with the ⌥⌘ shortcuts above.
   slide (`platform/floating.py`), like Preview. Each glass button mirrors a hidden Qt
   button, so logic, shortcuts and tests stay on the Qt side. In a narrow panel the least
   important items drop out first (zoom, then the colour menu); page navigation stays.
+- The audio player floats the same way over the bottom of the notes: play/pause,
+  ±10 s, a position slider, the time and a recording menu. The notes get room below the
+  last line so the capsule never covers text you can't scroll to. In a narrow panel the
+  slider steps aside before the time. Without recordings the plain hint stays under the notes.
 - No glow, no gradients, no coloured shadows.
 
 ## Colour
