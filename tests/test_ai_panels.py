@@ -35,7 +35,7 @@ from universe.services.vector_index import Hit  # noqa: E402
 from universe.storage import Workspace, read_slide_marks  # noqa: E402
 from universe.ui import claude_panel  # noqa: E402
 from universe.ui.ai_panel import AIPanel, hit_target  # noqa: E402
-from universe.ui.claude_panel import ClaudePanel, DocumentsDialog  # noqa: E402
+from universe.ui.claude_panel import ClaudePanel, DocumentsDialog, FolderLine  # noqa: E402
 from universe.ui.guide_panel import GuidePanel, link_citations  # noqa: E402
 from universe.ui.practice_panel import PracticePanel  # noqa: E402
 from universe.ui.progress_panel import ExamForm, ProgressPanel, exam_event  # noqa: E402
@@ -156,6 +156,9 @@ class ClaudeTabTests(Base):
         self.reveal.assert_called_with(folder)
         self.assertTrue(list(folder.glob("SL01*.pdf")))
         self.assertIn("Wrote 2 PDF files", self.panel.pdf_report.text())
+        self.assertEqual(self.panel.pdf_folder.where.text(), f"Saved in {claude_panel.shown_path(folder)}")
+        self.panel.pdf_folder.copy_path()
+        self.assertEqual(self.clipboard(), str(folder))
 
     def test_paste_conversion_shows_the_report_and_asks_for_what_is_missing(self):
         imported = []
@@ -207,6 +210,8 @@ class ClaudeTabTests(Base):
         self.reveal.assert_called_with(result.attach[0].parent)
         self.assertEqual(self.panel.export_done.text(), f"Drag the {len(result.attach)} files into Claude, then paste the prompt.")
         self.assertFalse(self.panel.export_actions.isHidden())
+        self.assertFalse(self.panel.export_folder.isHidden())
+        self.assertEqual(self.panel.export_folder.folder, result.attach[0].parent)
         self.panel.copy_all()
         self.assertIn("<documents>", self.clipboard())
         self.panel.copy_prompt()
@@ -371,6 +376,13 @@ class ClaudeTabTests(Base):
         wait_for(self.panel)
         self.assertIsNone(self.panel.result)
 
+    def test_another_subject_hides_where_the_last_export_went(self):
+        self.panel.export_pdfs()
+        wait_for(self.panel)
+        self.assertFalse(self.panel.pdf_folder.isHidden())
+        self.panel.set_scope(Workspace(self.subject.path.parent).create_subject("Anderes"), None)
+        self.assertTrue(self.panel.pdf_folder.isHidden())
+
     def test_the_notes_file_stays_untouched(self):
         path = next(self.lecture.path.glob("notes*"))
         raw = path.read_bytes()
@@ -385,6 +397,44 @@ class ClaudeTabTests(Base):
             wait_for(self.panel)
         load.assert_not_called()
         self.assertIsNotNone(self.panel.view)
+
+
+class FolderLineTests(unittest.TestCase):
+    DOT_FOLDER = Path.home() / ".universe_data" / "Subjects" / "Zynth" / "claude" / "PDFs to convert"
+
+    def line(self, copy=None) -> FolderLine:
+        line = FolderLine(copy or (lambda text, what: None))
+        self.addCleanup(line.deleteLater)
+        return line
+
+    def test_hidden_and_inert_until_an_export(self):
+        copied = []
+        line = self.line(lambda text, what: copied.append(text))
+        with mock.patch.object(claude_panel, "reveal") as reveal:
+            line.copy_path()
+            line.open_folder()
+        self.assertTrue(line.isHidden())
+        self.assertEqual(copied, [])
+        reveal.assert_not_called()
+
+    def test_a_folder_inside_a_dot_folder_says_how_to_reach_it(self):
+        copied = []
+        line = self.line(lambda text, what: copied.append((text, what)))
+        line.show_folder(self.DOT_FOLDER)
+        self.assertFalse(line.isHidden())
+        self.assertEqual(line.where.text(), "Saved in ~/.universe_data/Subjects/Zynth/claude/PDFs to convert")
+        self.assertFalse(line.hint.isHidden())
+        line.copy_path()
+        self.assertEqual(copied, [(str(self.DOT_FOLDER), "The folder path")])
+        with mock.patch.object(claude_panel, "reveal") as reveal:
+            line.open_folder()
+        reveal.assert_called_once_with(self.DOT_FOLDER)
+
+    def test_a_visible_folder_needs_no_hint(self):
+        line = self.line()
+        line.show_folder(Path("/Volumes/Uni/claude/2026-11-02 09.24 next/attach"))
+        self.assertEqual(line.where.text(), "Saved in /Volumes/Uni/claude/2026-11-02 09.24 next/attach")
+        self.assertTrue(line.hint.isHidden())
 
 
 class PracticeTabTests(Base):

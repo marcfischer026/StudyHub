@@ -306,7 +306,7 @@ class Ui10WatchSubjectTests(unittest.TestCase):
         panel.set_scope(sub_b, None)
         self.assertEqual(panel._imported, set())
         self.assertEqual(panel._own_copies, set())
-class Ui13SourcesTests(unittest.TestCase):
+class Ui12HeadingShiftTests(unittest.TestCase):
     def test_markdown_headings_shifted_down_two(self):
         from universe.ui.guide_panel import markdown_html
         html = markdown_html("# Definition\n\nText\n")
@@ -329,5 +329,23 @@ class Ui13SourcesTests(unittest.TestCase):
         ])
         self.assertEqual(out.count("SL01.p7"), 1)
         self.assertEqual(len(panel.links), 1)
+class Ui14FixedTextTests(unittest.TestCase):
+    def test_a_fixed_text_gets_the_lines_it_needs_in_a_narrow_dock(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QVBoxLayout, QWidget
+        from universe.ui.claude_panel import card, text_label
+        label = text_label("Gemini or Copilot turn the PDFs into Markdown, so Claude reads tables and graphics too.", muted=True)
+        dock = QWidget()
+        self.addCleanup(dock.deleteLater)
+        column = QVBoxLayout(dock)
+        column.addWidget(card("1 · PDFs to Markdown", label))
+        column.addStretch(1)  # as in the tab: spare height goes below the cards
+        dock.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        dock.resize(220, 600)
+        dock.show()
+        app.processEvents()
+        needed = label.heightForWidth(label.width())
+        self.assertGreater(needed, label.sizeHint().height())  # the size hint guesses fewer lines at this width
+        self.assertGreaterEqual(label.height(), needed)
 if __name__ == "__main__":
     unittest.main()

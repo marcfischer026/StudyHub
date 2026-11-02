@@ -66,6 +66,12 @@ def reveal(path: Path) -> None:
     subprocess.run(["open", str(path)])
 
 
+def shown_path(path: Path) -> str:
+    """The path as Finder's Go to Folder takes it, with ``~`` for the home folder."""
+    home = Path.home()
+    return f"~/{path.relative_to(home).as_posix()}" if path.is_relative_to(home) else str(path)
+
+
 def same_subject(a: Subject | None, b: Subject | None) -> bool:
     return (a.path if a else None) == (b.path if b else None)
 
@@ -77,11 +83,20 @@ def exam_date(subject: Subject | None) -> date | None:
         return None
 
 
+def wrapping_policy() -> QSizePolicy:
+    """Never widens the narrow dock, and asks for the height the wrapped lines need. A policy set by
+    hand drops the height-for-width that word wrap gave the label, and only a later setText brings it
+    back: a fixed text was squeezed to the line count its size hint guessed."""
+    policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    policy.setHeightForWidth(True)
+    return policy
+
+
 def text_label(text: str = "", muted: bool = False, rich: bool = False, selectable: bool = False) -> QLabel:
     """A label that wraps and never widens the narrow dock, whatever its text."""
     label = QLabel(text, wordWrap=True)
     label.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
-    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    label.setSizePolicy(wrapping_policy())
     if muted:
         label.setObjectName("muted")
     if selectable:
@@ -106,7 +121,7 @@ def card(title: str, *rows: QWidget | QLayout) -> QFrame:
     if title:
         heading = QLabel(title, wordWrap=True)
         heading.setObjectName("cardTitle")
-        heading.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        heading.setSizePolicy(wrapping_policy())
         layout.addWidget(heading)
     for row in rows:
         layout.addLayout(row) if isinstance(row, QLayout) else layout.addWidget(row)
@@ -266,6 +281,44 @@ class DocumentsDialog(QDialog):
         self.pageRequested.emit({"kind": "page", "doc": self.view.documents[row].key, "page": 1})
 
 
+# --- where an export went ---------------------------------------------------
+
+
+class FolderLine(QWidget):
+    """The folder an export went to. The data folder starts with a dot, so file pickers hide it:
+    besides Finder, its path pasted into Go to Folder is the way in."""
+
+    def __init__(self, copy, parent=None):
+        super().__init__(parent)
+        self.folder: Path | None = None
+        self._copy = copy  # the tab's, so watching the clipboard knows the path as its own text
+        self.where = text_label(selectable=True)
+        self.hint = text_label("File pickers hide this folder. In one, press ⌘⇧G and paste the path.", muted=True)
+        open_btn, copy_btn = QPushButton("Open folder"), QPushButton("Copy path")
+        open_btn.clicked.connect(lambda: self.open_folder())
+        copy_btn.clicked.connect(lambda: self.copy_path())
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.where)
+        layout.addWidget(self.hint)
+        layout.addWidget(button_row(open_btn, copy_btn))
+        self.hide()
+
+    def show_folder(self, folder: Path) -> None:
+        self.folder = folder
+        self.where.setText(f"Saved in {shown_path(folder)}")
+        self.hint.setVisible(any(part.startswith(".") for part in folder.parts))
+        self.show()
+
+    def open_folder(self) -> None:
+        if self.folder is not None:
+            reveal(self.folder)
+
+    def copy_path(self) -> None:
+        if self.folder is not None:
+            self._copy(str(self.folder), "The folder path")
+
+
 # --- the tab ----------------------------------------------------------------
 
 
@@ -349,6 +402,7 @@ class ClaudePanel(ScopedPanel):
         self.export_pdfs_btn.setToolTip("Writes stamped copies, copies the converter prompt and shows the folder")
         self.pdf_report = text_label(selectable=True)
         self.pdf_report.hide()
+        self.pdf_folder = FolderLine(self._copy)
         self.copy_missing_btn = self._button("Copy request for missing pages", self.copy_missing, hidden=True)
         return card(
             "1 · PDFs to Markdown",
@@ -361,6 +415,7 @@ class ClaudePanel(ScopedPanel):
                 self._button("Documents…", self.show_documents),
             ),
             self.pdf_report,
+            self.pdf_folder,
             self.copy_missing_btn,
         )
 
@@ -388,9 +443,9 @@ class ClaudePanel(ScopedPanel):
         self.export_actions = button_row(
             self._button("Copy prompt", self.copy_prompt),
             self._button("Copy all as one text", self.copy_all),
-            self._button("Open folder", self.open_export_folder),
         )
         self.export_actions.hide()
+        self.export_folder = FolderLine(self._copy)
         return card(
             "2 · Export for Claude",
             text_label("Everything as Markdown files to drag into Claude, with the prompt on the clipboard.", muted=True),
@@ -403,6 +458,7 @@ class ClaudePanel(ScopedPanel):
             button_row(self.export_btn),
             self.export_done,
             self.export_actions,
+            self.export_folder,
         )
 
     def _build_import_step(self) -> QFrame:
@@ -505,7 +561,7 @@ class ClaudePanel(ScopedPanel):
         self._imported.clear()
         self._own_copies.clear()
         self.watch.box.setChecked(False)
-        for widget in (self.pdf_report, self.copy_missing_btn, self.export_done, self.export_actions, self.reply_report, self.fix_btn, self.follow_up_btn):
+        for widget in (self.pdf_report, self.pdf_folder, self.copy_missing_btn, self.export_done, self.export_actions, self.export_folder, self.reply_report, self.fix_btn, self.follow_up_btn):
             widget.hide()
 
     def _choices(self) -> tuple[str, str, int, bool]:
@@ -584,6 +640,7 @@ class ClaudePanel(ScopedPanel):
         def done(export: pdf_conversion.PdfExport) -> None:
             self._copy(pdf_conversion.PROMPT, "The converter prompt")
             reveal(export.folder)
+            self.pdf_folder.show_folder(export.folder)
             parts = [f"Wrote {len(export.files)} PDF file{'s' * (len(export.files) != 1)}. Attach them to Gemini or Copilot and paste the prompt from the clipboard."]
             if export.already_converted:
                 parts.append(f"{export.already_converted} already converted, left out.")
@@ -659,7 +716,9 @@ class ClaudePanel(ScopedPanel):
     def _export_done(self, result: ExportResult) -> None:
         self.result = result
         self._copy(result.prompt, "The prompt")
-        reveal(self._attach_folder(result))
+        folder = self._attach_folder(result)
+        reveal(folder)
+        self.export_folder.show_folder(folder)
         count = len(result.attach)
         text = f"Drag the {count} file{'s' * (count != 1)} into Claude, then paste the prompt."
         if result.too_many_files:
@@ -680,10 +739,6 @@ class ClaudePanel(ScopedPanel):
     def copy_all(self) -> None:
         if self.result is not None:
             self._copy(claude_export.all_as_one_text(self.result), "All files and the prompt")
-
-    def open_export_folder(self) -> None:
-        if self.result is not None:
-            reveal(self._attach_folder(self.result))
 
     # --- step 3 -------------------------------------------------------------
 
