@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -24,6 +25,34 @@ TEMPLATE_SHARE = 0.3  # an image on this share of a deck's pages is its template
 NEARLY_EMPTY = 30  # characters: a page saying less than this says it some other way
 VISUAL_DRAWINGS = 25  # as do this many vector shapes: charts, diagrams, T-accounts
 PRIVATE_USE = re.compile("[\ue000-\uf8ff]")
+
+
+def needs_password(path: Path) -> bool:
+    """Whether the PDF only opens with a password (one that merely restricts
+    printing or copying opens fine and is not meant here)."""
+    try:
+        with pymupdf.open(path) as doc:
+            return bool(doc.needs_pass)
+    except Exception:  # damaged: the viewer says so
+        return False
+
+
+def unlock(path: Path, password: str) -> bool:
+    """Replace a password-locked PDF with an unlocked copy, so the viewer, the search
+    index and the Claude export can all read it. The locked original stays next to it
+    as a hidden ``.<name>.locked``. False if the password is wrong."""
+    with pymupdf.open(path) as doc:
+        if not doc.needs_pass:
+            return True
+        if not doc.authenticate(password):
+            return False
+        tmp = path.with_name(path.name + ".saving")
+        doc.save(tmp, garbage=1, encryption=pymupdf.PDF_ENCRYPT_NONE)
+    backup = path.with_name(f".{path.name}.locked")
+    if not backup.exists():
+        shutil.copy2(path, backup)
+    tmp.replace(path)
+    return True
 
 
 def page_texts(path: Path) -> list[str]:

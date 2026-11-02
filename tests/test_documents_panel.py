@@ -23,7 +23,7 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget  # noqa: E402
 
-from universe.services import claude_export, slide_links, subject_model  # noqa: E402
+from universe.services import claude_export, pdf_tools, slide_links, subject_model  # noqa: E402
 from universe.services.vector_index import lecture_chunks  # noqa: E402
 from universe.storage import TAG_PALETTE, Workspace  # noqa: E402
 from universe.ui.ai_panel import hit_target  # noqa: E402
@@ -228,6 +228,40 @@ class PanelTests(Fixture):
         self.assertEqual(self.panel.active_tags, set())
         self.assertFalse(self.panel.open_page("exams", "gone.pdf", 1))
         QTest.qWait(1)
+
+
+class LockedPdfTests(Fixture):
+    def lock(self, path: Path) -> Path:
+        with pymupdf.open(path) as doc:
+            tmp = path.with_name("tmp.locked")
+            doc.save(tmp, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="geheim", owner_pw="owner")
+        tmp.replace(path)
+        return path
+
+    def test_unlock_keeps_the_original_and_makes_the_text_readable(self):
+        self.lock(self.slides)
+        self.assertTrue(pdf_tools.needs_password(self.slides))
+        self.assertFalse(pdf_tools.unlock(self.slides, "falsch"))
+        self.assertTrue(pdf_tools.needs_password(self.slides))
+        self.assertTrue(pdf_tools.unlock(self.slides, "geheim"))
+        self.assertFalse(pdf_tools.needs_password(self.slides))
+        self.assertIn("Kapitalwert", pdf_tools.page_texts(self.slides)[0])
+        backup = self.slides.with_name(".VL1.pdf.locked")
+        self.assertTrue(backup.exists())
+        self.assertEqual([d.path.name for d in self.lecture.documents()], ["VL1.pdf"])
+
+    def test_panel_asks_for_the_password_and_again_after_a_cancel(self):
+        self.lock(self.slides)
+        answers = iter([("falsch", True), ("", False), ("geheim", True)])
+        with mock.patch("universe.ui.documents_panel.QInputDialog.getText", side_effect=lambda *a, **k: next(answers)):
+            panel = DocumentsPanel(lambda *_: None)
+            self.addCleanup(panel.deleteLater)
+            panel.set_scope(self.subject, self.lecture)
+            self.assertIsNone(panel.viewer.path)  # cancelled: locked, nothing shown
+            self.assertIn(self.slides, panel.declined)
+            panel._ask_again(panel.list.item(0))
+        self.assertEqual(panel.viewer.path, self.slides)
+        self.assertFalse(pdf_tools.needs_password(self.slides))
 
 
 class ConsumersTests(Fixture):

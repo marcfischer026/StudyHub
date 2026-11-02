@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..services.pdf_tools import needs_password, unlock
 from ..storage import DOC_TYPES, TAG_PALETTE, Document, Lecture, Subject, import_file
 from .pdf_viewer import PdfViewer
 
@@ -167,6 +168,7 @@ class DocumentsPanel(QWidget):
         self.lecture: Lecture | None = None
         self.documents: list[Document] = []
         self.active_tags: set[str] = set()
+        self.declined: set[Path] = set()  # locked PDFs whose password was not given; asked again on double-click
         self.setAcceptDrops(True)
 
         self.viewer = PdfViewer()
@@ -190,6 +192,7 @@ class DocumentsPanel(QWidget):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._list_menu)
         self.list.currentItemChanged.connect(self._open_current)
+        self.list.itemDoubleClicked.connect(self._ask_again)
 
         top = QHBoxLayout()
         top.addWidget(self.filter_bar, 1)
@@ -253,8 +256,38 @@ class DocumentsPanel(QWidget):
             self.viewer.open_file(None, FILTERED_TEXT if self.documents else EMPTY_TEXT)
             return
         path = item.data(Qt.ItemDataRole.UserRole).path
-        if path != self.viewer.path:
+        if path == self.viewer.path:
+            return
+        if path not in self.declined and needs_password(path):
+            if self._unlock(path):
+                self.pdfImported.emit(path)  # now it can be indexed and exported
+            else:
+                self.declined.add(path)
+        if path in self.declined:
+            self.viewer.open_file(None, f"{path.name} is locked with a password.\nDouble-click it in the list to enter the password.")
+        else:
             self.viewer.open_file(path)
+
+    def _ask_again(self, item: QListWidgetItem) -> None:
+        path = item.data(Qt.ItemDataRole.UserRole).path
+        if path in self.declined:
+            self.declined.discard(path)
+            self._open_current()
+
+    def _unlock(self, path: Path) -> bool:
+        """Ask for the password until it fits or the user cancels."""
+        prompt = f"{path.name} is locked with a password.\nEnter it once; UniVerse keeps an unlocked copy."
+        while True:
+            password, ok = QInputDialog.getText(self, "Locked PDF", prompt, QLineEdit.EchoMode.Password)
+            if not ok:
+                return False
+            try:
+                if unlock(path, password):
+                    return True
+            except Exception as exc:
+                QMessageBox.warning(self, "Locked PDF", f"Could not unlock {path.name}:\n{exc}")
+                return False
+            prompt = f"Wrong password for {path.name}. Try again:"
 
     def _row(self, doc: Document, colors: dict[str, str]) -> QWidget:
         row = QWidget()
@@ -415,6 +448,8 @@ class DocumentsPanel(QWidget):
             except OSError as exc:
                 QMessageBox.warning(self, "Import documents", f"Could not import {path.name}:\n{exc}")
                 continue
+            if needs_password(last) and not self._unlock(last):
+                self.declined.add(last)
             self.pdfImported.emit(last)
         if last:
             self.active_tags.clear()  # the new document must show up
