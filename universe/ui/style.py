@@ -114,9 +114,6 @@ def stylesheet(t: Tokens | None = None) -> str:
     t = t or tokens()
     s, m, l = RADIUS_S, RADIUS_M, RADIUS_L
     return f"""
-    QWidget[glassRole="sidebar"], QWidget[glassRole="toolbar"],
-    QWidget[glassRole="header"], QWidget[glassRole="status"] {{ background: transparent; }}
-
     QToolBar#mainToolbar {{
         spacing: 8px; padding: 4px 12px; border: none;
         border-bottom: 1px solid {t.border};

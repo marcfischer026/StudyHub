@@ -9,7 +9,7 @@ reason; anything not listed here stays as it is.
   It should look like it belongs on the Mac, not like a web app inside a window.
 - **Goal:** learning comes first. Anything on screen that isn't the material costs
   attention (cognitive load), so the chrome stays quiet and the material gets the space.
-- **Platform:** Mac only for now. Glass, fonts and the accent go through a small platform
+- **Platform:** Mac only for now. The toolbar, fonts and the accent go through a small platform
   layer so Windows (Mica/Acrylic, Segoe UI) can be added later without touching the panels.
 
 ## Layout
@@ -18,17 +18,18 @@ Three columns in a `QSplitter` (`universe/ui/workbench.py`) replace the floating
 
 | Column | Content | Surface |
 |---|---|---|
-| Sidebar | Subjects → lectures (⌥⌘S) | Glass (`sidebar` material) |
+| Sidebar | Subjects → lectures (⌥⌘S) | Solid |
 | Center | Notes (⌥⌘N) beside Documents: list + slide viewer (⌥⌘P) | Solid |
-| Inspector | Segmented control: Transcript · Recordings · AI Tutor (⌥⌘I) | Solid, glass header |
+| Inspector | Segmented control: Transcript · Recordings · AI Tutor (⌥⌘I) | Solid |
 
 - Documents sit in the centre, not the inspector: slides are read next to the notes, so they
   get centre space. Practice stays a tab inside AI Tutor for now.
-- Toolbar: unified with the title bar, glass. From left: sidebar toggle, **record button +
-  timer + level meter, always visible**, Timestamp, then (step 4) mode switcher, Export /
-  Import, inspector toggle. No breadcrumb: the window title already says where you are,
+- Toolbar: on macOS a native `NSToolbar` (Liquid Glass on macOS 26), elsewhere a Qt
+  toolbar. From left: sidebar toggle, Record, Timestamp, mode switcher, Export / Import,
+  inspector toggle. With the native toolbar, timer, level meter and microphone sit in the
+  status bar. No breadcrumb: the window title already says where you are,
   and the toolbar needs that room at half-screen width.
-- Status bar: glass, holds only the activity indicator and transient messages.
+- Status bar: holds the activity indicator and transient messages.
 - **Narrow windows:** when the window is too narrow for every part you want (half a laptop
   screen), parts step aside, the inspector first, then the sidebar, and come back when
   there is room. The part you asked for last (e.g. AI Tutor via Export) always gets its
@@ -56,16 +57,17 @@ parts lives in View, with the ⌥⌘ shortcuts above.
 
 ## Glass
 
-- Native `NSVisualEffectView` through pyobjc (`pyobjc-framework-Cocoa`), behind the
-  sidebar, toolbar, inspector header and status bar only. Materials: `sidebar`,
-  `titlebar`, `headerView`.
-- Notes, slides, transcript and practice stay opaque so text is always readable.
-- If macOS "Reduce transparency" is on, or pyobjc is missing, those surfaces fall back to solid
-  `palette(window)`. The app has to look finished without glass too.
-- Interface: `universe/ui/platform/glass.py` with `apply(widget, role)`; `_mac.py`
-  implements it, `_fallback.py` paints solid. Windows gets `_win.py` later.
-- No glow, no gradients, no coloured shadows. Glass panels are separated by a 1 px
-  hairline, not by shadow.
+- First attempt (removed): `NSVisualEffectView`s behind Qt widgets. It came out as plain
+  see-through, text over the desktop was hard to read, and it didn't look like a Mac app.
+- Now: glass only where macOS draws it itself. The main window gets a native `NSToolbar`
+  (`universe/ui/platform/toolbar.py`, `_mac_toolbar.py`), so on macOS 26 the buttons are
+  Liquid Glass capsules with SF Symbols, like Notes or Finder. Every item drives a
+  `QAction` the menus and shortcuts share, and follows its enabled/checked state.
+- The window uses `ExpandedClientAreaHint` + `NoTitleBarBackgroundHint`; Qt keeps the
+  content below the toolbar through the safe area. Everything below it is solid Qt.
+- Without pyobjc, off macOS, or in tests the Qt toolbar stays. Windows gets its own
+  backend later.
+- No glow, no gradients, no coloured shadows.
 
 ## Colour
 
@@ -124,8 +126,8 @@ Subtle but present, always for a reason (`universe/ui/motion.py`):
 - Not built, on purpose: a width animation for sidebar/inspector (the splitter's minimum
   widths make it jumpy) and a colour fade on the record button (stylesheets can't animate).
 - No hover-grow, no fade-in on lists, no looping animation.
-- macOS "Reduce motion" turns all of it off; "Reduce transparency" turns glass into solid
-  surfaces.
+- macOS "Reduce motion" turns all of it off; "Reduce transparency" is handled by
+  macOS for the native toolbar.
 
 ## Light and dark
 
@@ -152,8 +154,6 @@ No exclamation marks, no "magic", no emoji in headings or buttons.
 - `tests/test_main_window.py` and `tests/test_documents_panel.py` reference docks and
   need updating with the restructure.
 - pyobjc becomes a Mac-only dependency (`; sys_platform == "darwin"` in requirements).
-- Native glass under Qt widgets needs `WA_TranslucentBackground` on the host widgets;
-  check text rendering and that the PDF viewer isn't affected.
 
 ## Suggested order
 

@@ -1,4 +1,4 @@
-"""Tests for the design tokens, the icon loader and the glass fallback."""
+"""Tests for the design tokens, the icon loader and the native toolbar fallback."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QSplitter, QWidget  # noqa: E402
 
 from universe.ui import icons, motion, style  # noqa: E402
-from universe.ui.platform import glass  # noqa: E402
+from universe.ui.platform import toolbar  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -65,14 +65,9 @@ class IconTests(unittest.TestCase):
             icons.icon("no-such-icon")
 
 
-class GlassTests(unittest.TestCase):
-    def test_glass_falls_back_to_solid_offscreen(self):
-        window = QMainWindow()
-        self.assertFalse(glass.available())
-        self.assertFalse(glass.prepare_window(window))
-        side = QWidget(window)
-        self.assertFalse(glass.apply(side, glass.Role.SIDEBAR))
-        self.assertTrue(side.autoFillBackground())
+class NativeToolbarTests(unittest.TestCase):
+    def test_offscreen_keeps_the_qt_toolbar(self):
+        self.assertFalse(toolbar.available())
 
 
 class LiveThemeTests(unittest.TestCase):

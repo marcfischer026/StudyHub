@@ -1,9 +1,10 @@
-"""Main window: glass toolbar with Record, then sidebar | notes beside slides | inspector."""
+"""Main window: toolbar with Record (native Liquid Glass on macOS), then sidebar | notes beside slides | inspector."""
 
 from __future__ import annotations
 
 import base64
 import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -36,7 +37,7 @@ from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, 
 from .claude_panel import study_pool
 from .documents_panel import DocumentsPanel
 from .note_editor import NoteEditor
-from .platform import glass
+from .platform import toolbar as native_toolbar
 from .professor_dialog import AssignProfessorDialog, ProfessorManager
 from .progress_panel import ExamDialog
 from .settings_dialog import SettingsDialog
@@ -78,10 +79,15 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("UniVerse")
         self.resize(1440, 900)
-        # Not unified with the title bar: with the see-through (glass) window, macOS then squeezes
-        # the title under the window buttons. A plain title bar above the glass toolbar reads cleanly.
-        self.setUnifiedTitleAndToolBarOnMac(False)
-        glass.prepare_window(self)  # before the window exists natively
+        # macOS: an NSToolbar replaces the Qt one once the window exists (see showEvent). The content
+        # runs up under the title bar; Qt keeps it below the toolbar through the safe area.
+        self._native = native_toolbar.available()
+        self._native_toolbar = None
+        if self._native:
+            with warnings.catch_warnings():  # Qt flags the hint's shared value as deprecated
+                warnings.simplefilter("ignore", DeprecationWarning)
+                self.setWindowFlag(Qt.WindowType.ExpandedClientAreaHint, True)
+            self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
 
         self.jobs = JobManager(self)  # transcription + local AI, one at a time, pausable
 
@@ -122,7 +128,6 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.activity)
         self.activity.models.message.connect(lambda text: self.statusBar().showMessage(text, 10000))
         self.jobs.changed.connect(self._on_jobs_changed)
-        self._apply_glass()
         self._build_menus()
         self._connect()
 
@@ -171,9 +176,25 @@ class MainWindow(QMainWindow):
         self.record_controls = RecordControls(self.audio)
         self.record_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         bar.addWidget(self.record_controls)
+        # Actions shared by the Qt toolbar, the native one and the menus.
+        self.record_action = QAction("Record", self, checkable=True)
+        self.record_action.setShortcut(QKeySequence("Ctrl+R"))
+        self.record_action.setToolTip("Start / stop recording (⌘R)")
+        self.record_action.setEnabled(self.record_controls.record_btn.isEnabled())
+        self.record_action.triggered.connect(self.toggle_recording)
+        self.stamp_action = QAction("Timestamp", self)
+        self.stamp_action.setToolTip("Insert [▶ HH:MM:SS] at the current recording/playback time (⌘T)")
+        self.stamp_action.triggered.connect(self.notes.insert_timestamp)
+        self.export_action = QAction("Export for Claude", self)
+        self.export_action.setToolTip("Write this subject as .md files for Claude, with the prompt on the clipboard (⌘E)")
+        self.export_action.triggered.connect(self._export_for_claude)
+        self.import_action = QAction("Import Reply", self)
+        self.import_action.setToolTip("Bring Claude's reply back in")
+        self.import_action.triggered.connect(self._focus_import)
+
         stamp = QPushButton(" Timestamp", icon=icons.icon("timer"))
-        stamp.setToolTip("Insert [▶ HH:MM:SS] at the current recording/playback time (⌘T)")
-        stamp.clicked.connect(self.notes.insert_timestamp)
+        stamp.setToolTip(self.stamp_action.toolTip())
+        stamp.clicked.connect(self.stamp_action.trigger)
         bar.addWidget(stamp)
 
         spacer = QWidget()
@@ -186,17 +207,46 @@ class MainWindow(QMainWindow):
 
         export = QPushButton(" Export for Claude", icon=icons.icon("upload", "white"))
         export.setObjectName("primaryButton")
-        export.setToolTip("Write this subject as .md files for Claude, with the prompt on the clipboard (⌘E)")
-        export.clicked.connect(self._export_for_claude)
+        export.setToolTip(self.export_action.toolTip())
+        export.clicked.connect(self.export_action.trigger)
         import_btn = QPushButton(" Import reply", icon=icons.icon("download"))
-        import_btn.setToolTip("Bring Claude's reply back in")
-        import_btn.clicked.connect(self._focus_import)
+        import_btn.setToolTip(self.import_action.toolTip())
+        import_btn.clicked.connect(self.import_action.trigger)
         self.lecture_buttons = (stamp,)
         self._shrinking_labels = ((stamp, stamp.text()), (import_btn, import_btn.text()))  # icon only when narrow
         self.subject_buttons = (export, import_btn)  # work with no lecture open
         for button in self.subject_buttons:
             bar.addWidget(button)
         bar.addWidget(self._toggle_button("inspector", "panel-right", "Show or hide the inspector"))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._native and self._native_toolbar is None:
+            self._install_native_toolbar()
+
+    def _install_native_toolbar(self) -> None:
+        """macOS 26: Liquid Glass toolbar with SF Symbols; the Qt toolbar steps out of the way."""
+        T = native_toolbar
+        modes = {"lecture": "note.text", "read": "book", "review": "clock.arrow.circlepath", "exam": "checklist"}
+        self._native_toolbar = T.install(
+            self,
+            [
+                T.Button("sidebar", "sidebar.left", self.part_actions["sidebar"]),
+                T.Button("record", "record.circle", self.record_action, symbol_when_checked="stop.circle.fill", tint="red"),
+                T.Button("stamp", "timer", self.stamp_action),
+                T.SPACE,
+                T.Group("modes", [(modes.get(key, "circle"), action) for key, action in self.mode_actions.items()]),
+                T.SPACE,
+                T.Button("export", "square.and.arrow.up", self.export_action, prominent=True),
+                T.Button("import", "square.and.arrow.down", self.import_action),
+                T.Button("inspector", "sidebar.right", self.part_actions["inspector"]),
+            ],
+        )
+        self.toolbar.hide()
+        self.toolbar.toggleViewAction().setVisible(False)
+        # Timer, level, live check and microphone move to the status bar; Record sits in the toolbar.
+        self.record_controls.record_btn.hide()
+        self.statusBar().insertPermanentWidget(0, self.record_controls)
 
     def _build_mode_switcher(self) -> QWidget:
         """Lecture · Read · Review · Exam, ⌘1–⌘4; also in the View menu."""
@@ -262,15 +312,6 @@ class MainWindow(QMainWindow):
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         return button
 
-    def _apply_glass(self) -> None:
-        """Glass on the chrome; everything you read stays solid."""
-        glass.apply(self.sidebar, glass.Role.SIDEBAR)
-        glass.apply(self.toolbar, glass.Role.TOOLBAR)
-        glass.apply(self.statusBar(), glass.Role.STATUS)
-        glass.apply(self.workbench.inspector.header, glass.Role.HEADER)
-        for widget in (self.center, self.documents, self.workbench.inspector.stack):
-            glass.solid(widget)
-
     def _on_part_toggled(self, part: str, visible: bool) -> None:
         action = self.part_actions[part]
         if action.isChecked() != visible:
@@ -316,11 +357,12 @@ class MainWindow(QMainWindow):
         add(file_menu, "Quit", self.close, QKeySequence.StandardKey.Quit)
 
         notes_menu = bar.addMenu("&Notes")
-        add(notes_menu, "Insert Timestamp", self.notes.insert_timestamp, "Ctrl+T")
+        self.stamp_action.setShortcut(QKeySequence("Ctrl+T"))
+        notes_menu.addAction(self.stamp_action)
         add(notes_menu, "Save Notes", self.notes.save, QKeySequence.StandardKey.Save)
 
         audio_menu = bar.addMenu("&Audio")
-        add(audio_menu, "Start / Stop Recording", self.toggle_recording, "Ctrl+R")
+        audio_menu.addAction(self.record_action)
         add(audio_menu, "Pause / Resume Recording", self.audio.toggle_pause)
         add(audio_menu, "Play / Pause", self.audio.toggle_play, "Ctrl+Shift+Space")
         add(audio_menu, "Transcribe Selected Audio", self.recordings._transcribe)
@@ -333,8 +375,9 @@ class MainWindow(QMainWindow):
         add(prof_menu, "Assign to Current Subject…", lambda: self.subject and self._assign_professor(self.subject))
 
         ai_menu = bar.addMenu("A&I")
-        add(ai_menu, "Export for Claude", self._export_for_claude, "Ctrl+E")
-        add(ai_menu, "Import Claude's Reply", self._focus_import)
+        self.export_action.setShortcut(QKeySequence("Ctrl+E"))
+        ai_menu.addAction(self.export_action)
+        ai_menu.addAction(self.import_action)
 
         tools = bar.addMenu("&Tools")
         add(tools, "Rebuild Search Index (Subject)", self._rebuild_index)
@@ -434,6 +477,9 @@ class MainWindow(QMainWindow):
             button.setEnabled(lecture is not None)
         for button in self.subject_buttons:
             button.setEnabled(self.subject is not None)
+        self.stamp_action.setEnabled(lecture is not None)
+        self.export_action.setEnabled(self.subject is not None)
+        self.import_action.setEnabled(self.subject is not None)
         where = f"{lecture.subject.name} › {lecture.name}" if lecture else (self.subject.name if self.subject else "")
         self.setWindowTitle(f"UniVerse — {where}" if where else "UniVerse")
 
@@ -471,10 +517,11 @@ class MainWindow(QMainWindow):
     def toggle_recording(self) -> None:
         if self.audio.recording:
             self.audio.stop_recording()
-            return
-        lecture = self.ensure_lecture()
-        if lecture is not None:
-            self.audio.start_recording(lecture)
+        else:
+            lecture = self.ensure_lecture()
+            if lecture is not None:
+                self.audio.start_recording(lecture)
+        self.record_action.setChecked(self.audio.recording)  # a cancelled start leaves it unchecked
 
     def _import_folder(self, kind: str, name_hint: str) -> Path | None:
         """Where a PDF of this type goes: slides to the open lecture (a new one if none
@@ -663,6 +710,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Moved {count} to {target.subject.name} › {target.name}{note}.", 8000)
 
     def _on_recording_changed(self, recording: bool) -> None:
+        self.record_action.setChecked(recording)
+        self.record_action.setText("Stop" if recording else "Record")
         if recording:
             self.statusBar().showMessage("Recording… ⌘T adds a timestamp to your notes.")
             self.notes.edit.setFocus()
