@@ -196,6 +196,9 @@ def stylesheet(t: Tokens | None = None) -> str:
     }}
     QListWidget#lectureList::item:hover {{ border-color: {t.accent}; }}
 
+    QLineEdit#sidebarSearch {{
+        background: {t.hover}; border: none; border-radius: {m}px; padding: 4px 6px; min-height: 18px;
+    }}
     QTreeWidget#subjectTree {{ border: none; background: transparent; }}
     QTreeWidget#subjectTree::item {{ padding: 4px; border-radius: {s}px; }}
     QTreeWidget#subjectTree::item:hover {{ background: {t.hover}; }}

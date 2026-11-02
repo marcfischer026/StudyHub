@@ -23,6 +23,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QImage, QKeySequence, Q
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMenu,
     QMessageBox,
@@ -34,9 +35,11 @@ from PySide6.QtWidgets import (
 )
 
 from . import icons
+from .platform import floating
 from .style import ACCENT
 
 PAGE_GAP = 12
+GLASS_ROOM = 48  # extra space below the last page for the floating controls
 KEEP_RENDERED = 6  # pages beyond this distance from the viewport drop their pixmap
 WORD_SLACK = 3  # points: a press this close to a word starts a text selection, not an area
 HIGHLIGHT_COLORS = {  # name -> RGB 0..1, as PDF annotations store them
@@ -267,6 +270,33 @@ class PdfViewer(QWidget):
         layout.addLayout(nav)
         layout.addWidget(self.scroll, 1)
         self._nav = nav
+        self._glass = None
+        if floating.available():
+            # macOS 26: the controls float over the slide in a Liquid Glass capsule, like Preview.
+            for i in range(nav.count()):
+                if nav.itemAt(i).widget() is not None:
+                    nav.itemAt(i).widget().hide()
+            F = floating
+            self._glass = F.attach(
+                self.scroll,
+                [
+                    F.Button("chevron.left", self.prev_btn, keep=F.MUST),
+                    F.Text(self._page_text, tooltip="Go to page…", on_click=self._ask_page),
+                    F.Button("chevron.right", self.next_btn, keep=F.MUST),
+                    F.DIVIDER,
+                    F.Button("minus.magnifyingglass", zoom_out, keep=F.LOW),
+                    F.Button("plus.magnifyingglass", zoom_in, keep=F.LOW),
+                    F.Button("arrow.left.and.right", fit, keep=F.LOW),
+                    F.DIVIDER,
+                    F.Button("scissors", self.snipper),
+                    F.Button("highlighter", self.highlighter),
+                    F.Menu("paintpalette", "Highlight colour", self.highlighter.menu),
+                    F.Button("eraser", self.eraser),
+                ],
+                visible=lambda: self.doc is not None,
+            )
+            # The last page can scroll up above the capsule.
+            self.pages_layout.setContentsMargins(PAGE_GAP, PAGE_GAP, PAGE_GAP, PAGE_GAP + GLASS_ROOM)
         self._full_width = nav.sizeHint().width() + 8
         self._set_compact(True)  # the narrow size is the minimum; resizeEvent widens the labels
         nav.invalidate()  # forget the size measured with the full labels
@@ -286,6 +316,18 @@ class PdfViewer(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._set_compact(event.size().width() < self._full_width)
+
+    def _page_text(self) -> str:
+        return f"{self.page.value()} / {len(self.page_labels)}" if self.doc is not None else ""
+
+    def _ask_page(self) -> None:
+        number, ok = QInputDialog.getInt(self, "Go to Page", "Page:", self.page.value(), 1, max(1, len(self.page_labels)))
+        if ok:
+            self.go_to_page(number)
+
+    def _glass_changed(self) -> None:
+        if self._glass is not None:
+            self._glass.refresh()
 
     # --- file ---------------------------------------------------------------
 
@@ -313,6 +355,7 @@ class PdfViewer(QWidget):
         self.page_count.setText("/ 0")
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
+        self._glass_changed()
 
     def open_file(self, path: Path | None, message: str = "") -> None:
         """Show ``path``, or ``message`` when there is nothing to show."""
@@ -344,6 +387,7 @@ class PdfViewer(QWidget):
         if self.fit_mode:
             self.zoom = self._fit_zoom()
         self._apply_zoom(keep_page=1)
+        self._glass_changed()
 
     # --- zoom ---------------------------------------------------------------
 
@@ -412,6 +456,7 @@ class PdfViewer(QWidget):
         self.page.blockSignals(False)
         self.prev_btn.setEnabled(number > 1)
         self.next_btn.setEnabled(number < len(self.page_labels))
+        self._glass_changed()
         if not self._jumping and self.path is not None and self._shown != (self.path, number):
             if scrolled:  # scrolling past pages is not turning them: emit once the page stays
                 self._pending = number

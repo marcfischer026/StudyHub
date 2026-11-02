@@ -72,6 +72,11 @@ parts lives in View, with the ⌥⌘ shortcuts above.
   window background (`Tokens.window`). Drawn by Qt, so text stays sharp. Real glass behind
   Qt widgets was tried twice; Qt paints over it, and over a flat background it looks the
   same as these panels anyway.
+- Real Liquid Glass where Apple puts it, on controls floating over content: the PDF
+  viewer's page, zoom and marking controls are an `NSGlassEffectView` capsule over the
+  slide (`platform/floating.py`), like Preview. Each glass button mirrors a hidden Qt
+  button, so logic, shortcuts and tests stay on the Qt side. In a narrow panel the least
+  important items drop out first (zoom, then the colour menu); page navigation stays.
 - No glow, no gradients, no coloured shadows.
 
 ## Colour

@@ -104,7 +104,9 @@ class Sidebar(QWidget):
         super().__init__(parent)
         self.workspace = workspace
 
-        self.filter = QLineEdit(placeholderText="Search subjects & lectures…")
+        self.filter = QLineEdit(placeholderText="Search", objectName="sidebarSearch")
+        self.filter.setToolTip("Search subjects & lectures")
+        self.filter.addAction(icons.icon("search"), QLineEdit.ActionPosition.LeadingPosition)
         self.filter.setClearButtonEnabled(True)
         self.filter.textChanged.connect(self._apply_filter)
 
