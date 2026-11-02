@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QWidget
 
 from ..services.system_monitor import Snapshot
 from . import motion, style
@@ -45,7 +45,7 @@ UP = QColor("#00C46A")
 DOWN = QColor("#FF3B3B")
 SERIES = {"cpu": QColor("#FFB000"), "gpu": QColor("#00B7E8"), "ram": QColor("#B0B0B0")}
 
-HEADER_H, QUOTE_H, PLOT_H = 18, 62, 116
+HEADER_H, QUOTE_H, PLOT_H = 18, 62, 122
 
 
 @dataclass
@@ -80,8 +80,7 @@ class UsageChart(QWidget):
         self.flash: dict[str, tuple[float, QColor]] = {}  # key → (when, green or red)
         self.hover_x: float | None = None
         self.setMouseTracking(True)
-        self.setMinimumHeight(self._height())
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(self._height())
         self.frame = QTimer(self, interval=1000 // FPS)
         self.frame.timeout.connect(self._tick)
 
@@ -251,7 +250,7 @@ class UsageChart(QWidget):
         painter.setFont(small)
         metrics = QFontMetricsF(small)
         gutter = metrics.horizontalAdvance("100.0") + 10
-        area = QRectF(plot.left() + 6, plot.top() + 8, plot.width() - gutter - 6, plot.height() - metrics.height() - 14)
+        area = QRectF(plot.left() + 6, plot.top() + 8, plot.width() - gutter - 6, plot.height() - metrics.height() - 20)
         left, right, top, bottom = int(area.left()), int(area.right()), int(area.top()), int(area.bottom())
 
         def y_of(value: float) -> int:

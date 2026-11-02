@@ -270,3 +270,13 @@ class UsageChartTests(unittest.TestCase):
         for _ in range(60):
             chart._tick()
         self.assertAlmostEqual(chart.shown["cpu"], 50, delta=0.5)
+
+    def test_change_and_range_over_the_window(self):
+        from universe.ui.usage_chart import Reading, _change, _stats
+
+        now = 1000.0
+        readings = [Reading(now - 90, 80, None, 50), Reading(now - 50, 20, 5, 50), Reading(now, 35, 9, 50)]
+        self.assertEqual(_change(readings, "cpu", now), 15)  # against the oldest within the last minute
+        self.assertEqual(_change(readings, "gpu", now), 4)
+        self.assertEqual(_stats(readings, "cpu"), (80, 20, 45))
+        self.assertIsNone(_stats(readings[:1], "gpu"))

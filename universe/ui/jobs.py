@@ -630,6 +630,9 @@ class ActivityPopup(QFrame):
         self.history.setText("Recent: " + " · ".join(done) if done else "")
         self.history.setVisible(bool(done))
         self.adjustSize()
+        # adjustSize settles on the height for the minimum width, which can be a line short
+        # of what the wrapped labels need; the size hint never is, so never go below it.
+        self.resize(self.width(), max(self.height(), self.sizeHint().height()))
 
 
 def _muted(text: str) -> QLabel:
