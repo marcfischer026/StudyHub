@@ -342,7 +342,7 @@ class MainWindowTests(unittest.TestCase):
     def test_one_documents_part_beside_the_notes(self):
         bench = self.window.workbench
         self.assertIs(bench.parts["documents"], self.window.documents)
-        self.assertIs(bench.center.widget(1), self.window.documents)
+        self.assertIs(bench.center.widget(1).content, self.window.documents)
 
     def test_lecture_switch_keeps_an_open_subject_document_and_swaps_the_slides(self):
         panel = self.window.documents

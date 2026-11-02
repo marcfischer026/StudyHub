@@ -12,7 +12,8 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 
-from PySide6.QtCore import QByteArray, QSize, Qt, Signal
+from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget
 
 from . import icons, motion, style
@@ -20,6 +21,42 @@ from . import icons, motion, style
 PARTS = ("sidebar", "notes", "documents", "inspector")
 STEP_ASIDE = ("inspector", "sidebar", "documents", "notes")  # first steps aside first in a narrow window
 SIDEBAR_WIDTH = 240
+PANEL_GAP = 6  # between panels (the drag handle) and to the window edge
+
+
+class Panel(QWidget):
+    """A part floating on the window background: rounded, a light rim, a soft shadow below.
+
+    The look of the macOS 26 sidebar and inspector, drawn by Qt so text stays
+    sharp and solid. The card takes the content's own background colour, so
+    the content's square corners, kept inside the inset, don't show.
+    """
+
+    SHADOW = 3  # px below the card for the shadow
+    SIDE = 1  # px left and right for the rim's anti-aliasing
+
+    def __init__(self, content: QWidget, parent=None):
+        super().__init__(parent)
+        self.content = content
+        layout = QVBoxLayout(self)
+        inset = style.PANEL_INSET
+        layout.setContentsMargins(self.SIDE + inset, inset, self.SIDE + inset, self.SHADOW + inset)
+        layout.addWidget(content)
+
+    def paintEvent(self, event) -> None:
+        t = style.tokens()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        card = QRectF(self.rect()).adjusted(self.SIDE + 0.5, 0.5, -self.SIDE - 0.5, -self.SHADOW - 0.5)
+        path = QPainterPath()
+        path.addRoundedRect(card, style.RADIUS_PANEL, style.RADIUS_PANEL)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for offset, alpha in ((3, 6), (2, 10), (1, 16)):  # soft, short, straight down
+            painter.setBrush(QColor(0, 0, 0, alpha * (3 if t.dark else 1)))
+            painter.drawPath(path.translated(0, offset))
+        painter.setBrush(self.palette().color(QPalette.ColorRole.Base))
+        painter.setPen(QColor(t.rim))
+        painter.drawPath(path)
 
 
 @dataclass(frozen=True)
@@ -113,18 +150,20 @@ class Workbench(QSplitter):
     def __init__(self, sidebar: QWidget, notes: QWidget, documents: QWidget, parent=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setObjectName("workbench")
-        self.setHandleWidth(1)
+        self.setHandleWidth(PANEL_GAP)
+        self.setContentsMargins(PANEL_GAP, 0, PANEL_GAP, PANEL_GAP)
         self.inspector = Inspector()
         self.center = QSplitter(Qt.Orientation.Horizontal, objectName="centerSplit")
-        self.center.setHandleWidth(1)
-        self.center.addWidget(notes)
-        self.center.addWidget(documents)
+        self.center.setHandleWidth(PANEL_GAP)
         self.parts = {"sidebar": sidebar, "notes": notes, "documents": documents, "inspector": self.inspector}
+        self.frames = {part: Panel(widget) for part, widget in self.parts.items()}  # what the splitters hold
+        self.center.addWidget(self.frames["notes"])
+        self.center.addWidget(self.frames["documents"])
         self.wanted = dict.fromkeys(PARTS, True)
         self.priority = list(STEP_ASIDE)
         self.mode = "lecture"
         self.saved: dict[str, dict] = {}  # mode -> your changes to it (see _snapshot)
-        for widget in (sidebar, self.center, self.inspector):
+        for widget in (self.frames["sidebar"], self.center, self.frames["inspector"]):
             self.addWidget(widget)
         for splitter in (self, self.center):
             splitter.setChildrenCollapsible(False)  # hiding is explicit, via View or the toolbar
@@ -133,7 +172,7 @@ class Workbench(QSplitter):
         self.reset()
 
     def is_shown(self, part: str) -> bool:
-        return not self.parts[part].isHidden()
+        return not self.frames[part].isHidden()
 
     def set_shown(self, part: str, visible: bool) -> None:
         """Show or hide a part because the user asked to."""
@@ -199,19 +238,19 @@ class Workbench(QSplitter):
             self.inspector.show_pane(mode.pane, animate=False)
 
     def _set_column_sizes(self, sidebar: int, center: int, inspector: int) -> None:
-        width = {self.parts["sidebar"]: sidebar, self.center: center, self.inspector: inspector}
+        width = {self.frames["sidebar"]: sidebar, self.center: center, self.frames["inspector"]: inspector}
         self.setSizes([width[self.widget(i)] for i in range(self.count())])
 
     # --- the two low-key layout options -----------------------------------------
 
     def inspector_left(self) -> bool:
-        return self.indexOf(self.inspector) < self.indexOf(self.center)
+        return self.indexOf(self.frames["inspector"]) < self.indexOf(self.center)
 
     def set_inspector_left(self, left: bool) -> None:
         """Inspector between sidebar and centre instead of on the right edge."""
         if left != self.inspector_left():
             sizes = dict(zip((self.widget(i) for i in range(self.count())), self.sizes()))
-            self.insertWidget(1 if left else 2, self.inspector)
+            self.insertWidget(1 if left else 2, self.frames["inspector"])
             self.setSizes([sizes[self.widget(i)] for i in range(self.count())])
         for i in range(self.count()):  # only the centre grows with the window
             self.setStretchFactor(i, int(self.widget(i) is self.center))
@@ -226,7 +265,7 @@ class Workbench(QSplitter):
     # --- fitting the window ---------------------------------------------------
 
     def _needs(self, parts: list[str]) -> int:
-        widths = [self.parts[p].minimumSizeHint().width() for p in parts]
+        widths = [self.frames[p].minimumSizeHint().width() for p in parts]
         return sum(widths) + self.handleWidth() * max(len(parts) - 1, 0)
 
     def _fit(self) -> None:
@@ -237,7 +276,7 @@ class Workbench(QSplitter):
         for part in PARTS:
             visible = part in on
             if self.is_shown(part) != visible:
-                self.parts[part].setVisible(visible)
+                self.frames[part].setVisible(visible)
                 self.visibilityChanged.emit(part, visible)
         # The centre column goes away only when both of its parts are hidden.
         self.center.setVisible(self.is_shown("notes") or self.is_shown("documents"))
@@ -253,7 +292,7 @@ class Workbench(QSplitter):
     def minimumSizeHint(self) -> QSize:
         """Narrow enough for one part: the others step aside (see :meth:`_fit`)."""
         hint = super().minimumSizeHint()
-        return QSize(max(self.parts[p].minimumSizeHint().width() for p in PARTS), hint.height())
+        return QSize(max(self.frames[p].minimumSizeHint().width() for p in PARTS), hint.height())
 
     # --- kept between launches ------------------------------------------------
 

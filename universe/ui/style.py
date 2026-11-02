@@ -34,6 +34,7 @@ ACCENT = ACCENT_LIGHT
 
 SPACE = (4, 8, 12, 16, 24)  # the only spacing values; index with SPACE[n]
 RADIUS_S, RADIUS_M, RADIUS_L = 4, 6, 10  # controls / cards and inputs / popovers
+RADIUS_PANEL, PANEL_INSET = 12, 4  # the floating panels; an inset of 4 keeps square content inside the curve
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,8 @@ class Tokens:
     hover: str
     separator: str  # opaque hairline
     raised: str  # the chosen segment of a segmented control
+    rim: str  # edge of a floating panel
+    window: str  # behind the panels
     mono: str  # font family for times and timestamps
 
     def accent_tint(self, alpha: int) -> QColor:
@@ -95,6 +98,8 @@ def tokens(dark: bool | None = None) -> Tokens:
             hover="rgba(255,255,255,0.08)",
             separator="#3A3A3C",
             raised="#636366",
+            rim="#3A3A3C",
+            window="#141416",
             mono=mono,
         )
     return Tokens(
@@ -109,6 +114,8 @@ def tokens(dark: bool | None = None) -> Tokens:
         hover="rgba(0,0,0,0.06)",
         separator="#D5D5D7",
         raised="#FFFFFF",
+        rim="#DADADC",
+        window="#E8E8EB",
         mono=mono,
     )
 
@@ -127,7 +134,7 @@ def stylesheet(t: Tokens | None = None) -> str:
     QToolBar#formatBar QToolButton:hover {{ background: {t.hover}; }}
     QToolBar#formatBar QToolButton:checked {{ background: {t.accent_fill}; color: white; }}
 
-    QSplitter#workbench::handle, QSplitter#centerSplit::handle {{ background: {t.separator}; }}
+    QSplitter#workbench::handle, QSplitter#centerSplit::handle {{ background: transparent; }}
     QWidget#inspectorHeader {{ border-bottom: 1px solid {t.separator}; }}
     QToolButton#segment {{ border: none; border-radius: {s}px; padding: 4px 8px; }}
     QToolButton#segment:hover {{ background: {t.hover}; }}
@@ -139,6 +146,11 @@ def stylesheet(t: Tokens | None = None) -> str:
     QToolButton#sidebarAction {{ border: none; border-radius: {s}px; padding: 4px 8px; background: transparent; }}
     QToolButton#sidebarAction:hover {{ background: {t.hover}; }}
     QTabBar::tab {{ padding: 4px 12px; }}
+    /* Floating panels (workbench.Panel) on a quiet window background; inside, no boxes in boxes. */
+    QMainWindow, QSplitter#workbench, QSplitter#centerSplit {{ background: {t.window}; }}
+    QStatusBar {{ background: {t.window}; border: none; }}
+    Panel QAbstractScrollArea {{ border: none; }}
+
     /* A macOS segmented control (segmented.py): a light track, the chosen segment raised. */
     QFrame#segmentTrack {{ background: {t.hover}; border-radius: {m}px; }}
     QToolButton#segmentItem {{

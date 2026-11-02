@@ -175,7 +175,7 @@ class ModeTests(unittest.TestCase):
         self.window.mode_actions["review"].trigger()
         self.window.stacked_action.setChecked(True)
         self.window.inspector_left_action.setChecked(True)
-        self.assertLess(self.bench.indexOf(self.bench.inspector), self.bench.indexOf(self.bench.center))
+        self.assertLess(self.bench.indexOf(self.bench.frames["inspector"]), self.bench.indexOf(self.bench.center))
         self.window.settings.layout = self.bench.state()
         other = MainWindow(self.window.settings)
         self.addCleanup(other.deleteLater)

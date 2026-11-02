@@ -67,6 +67,11 @@ parts lives in View, with the ⌥⌘ shortcuts above.
   content below the toolbar through the safe area. Everything below it is solid Qt.
 - Without pyobjc, off macOS, or in tests the Qt toolbar stays. Windows gets its own
   backend later.
+- Below the toolbar, sidebar, notes, documents and inspector are floating panels
+  (`workbench.Panel`): 12 px corners, a light rim, a short soft shadow, on a quiet grey
+  window background (`Tokens.window`). Drawn by Qt, so text stays sharp. Real glass behind
+  Qt widgets was tried twice; Qt paints over it, and over a flat background it looks the
+  same as these panels anyway.
 - No glow, no gradients, no coloured shadows.
 
 ## Colour
