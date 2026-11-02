@@ -29,7 +29,7 @@ Three columns in a `QSplitter` (`universe/ui/workbench.py`) replace the floating
   inspector toggle. With the native toolbar, timer, level meter and microphone sit in the
   status bar. No breadcrumb: the window title already says where you are,
   and the toolbar needs that room at half-screen width.
-- Status bar: holds the activity indicator and transient messages. Its popup shows CPU, GPU and memory as three readouts over a two-minute live chart (usage_chart.py). The chart glides with the clock, breaks where sampling paused, shows values on hover, and stops moving with Reduce motion.
+- Status bar: holds the activity indicator and transient messages. Its popup shows CPU, GPU and memory as three readouts over a two-minute live chart (usage_chart.py), drawn like an instrument: hairline columns and grid, square colour keys, tabular numbers, straight segments with a faint flat fill, a 0–100 scale and minute ticks. The chart glides with the clock, breaks where sampling paused, shows values on hover, and stops moving with Reduce motion.
 - **Narrow windows:** when the window is too narrow for every part you want (half a laptop
   screen), parts step aside, the inspector first, then the sidebar, and come back when
   there is room. The part you asked for last (e.g. AI Tutor via Export) always gets its
