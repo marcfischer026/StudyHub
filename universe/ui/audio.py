@@ -42,6 +42,7 @@ from ..services import live_check
 from ..services.live_check import LiveMonitor, LiveStatus
 from ..services.timestamps import format_seconds
 from ..storage import Lecture, clock_time, write_slide_marks, write_timeline
+from . import icons, style
 
 MIC_PRIVACY_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 SILENCE_AFTER_S = 4.0
@@ -266,7 +267,7 @@ class AudioController(QObject):
 
 
 class RecordControls(QWidget):
-    """Toolbar cluster: ● Record / ■ Stop, pause, timer, level meter, mic menu."""
+    """Toolbar cluster: Record / Stop, pause, timer, level meter, mic menu."""
 
     recordClicked = Signal()
 
@@ -274,11 +275,13 @@ class RecordControls(QWidget):
         super().__init__(parent)
         self.audio = audio
 
-        self.record_btn = QPushButton("●  Record")
+        self.record_btn = QPushButton("Record")
         self.record_btn.setObjectName("recordButton")
+        self.record_btn.setIcon(icons.dot("white"))
         self.record_btn.setToolTip("Start / stop recording (⌘R)")
         self.record_btn.clicked.connect(self.recordClicked)
-        self.pause_btn = QToolButton(text="❚❚")
+        self.pause_btn = QToolButton()
+        self.pause_btn.setIcon(icons.icon("pause"))
         self.pause_btn.setToolTip("Pause / resume recording")
         self.pause_btn.clicked.connect(audio.toggle_pause)
         self.time = QLabel("00:00:00")
@@ -287,7 +290,8 @@ class RecordControls(QWidget):
         self.level.setObjectName("levelMeter")
         self.level.setFixedSize(90, 8)
 
-        self.mic_btn = QToolButton(text="🎙")
+        self.mic_btn = QToolButton()
+        self.mic_btn.setIcon(icons.icon("mic"))
         self.mic_btn.setObjectName("micButton")
         self.mic_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.mic_menu = QMenu(self)
@@ -297,13 +301,14 @@ class RecordControls(QWidget):
         self.live = QToolButton()
         self.live.setObjectName("liveCheck")
         self.live.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.live.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.live.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.live_menu = QMenu(self)
         self.live_menu.aboutToShow.connect(self._fill_live_menu)
         self.live.setMenu(self.live_menu)
 
-        self.warning = QPushButton("⚠ No sound — fix microphone")
+        self.warning = QPushButton("No sound — fix microphone")
         self.warning.setObjectName("warningButton")
+        self.warning.setIcon(icons.icon("triangle-alert", style.WARNING))
         self.warning.clicked.connect(self._show_mic_help)
         self.warning.hide()
 
@@ -325,7 +330,12 @@ class RecordControls(QWidget):
         self._update_mic_tooltip()
 
     def _on_recording_changed(self, recording: bool) -> None:
-        self.record_btn.setText("■  Stop" if recording else "●  Record")
+        if recording:
+            self.record_btn.setText("Stop")
+            self.record_btn.setIcon(icons.icon("square", "white"))
+        else:
+            self.record_btn.setText("Record")
+            self.record_btn.setIcon(icons.dot("white"))
         self.record_btn.setProperty("recording", recording)
         self.record_btn.style().unpolish(self.record_btn)
         self.record_btn.style().polish(self.record_btn)
@@ -333,7 +343,8 @@ class RecordControls(QWidget):
         self.time.setVisible(recording)
         self.level.setVisible(recording)
         self.live.setVisible(recording)
-        self.live.setText(LIVE_ICONS["listening"] + " Listening…")
+        self.live.setText("Listening…")
+        self.live.setIcon(icons.dot(LIVE_COLORS.get("listening", style.NEUTRAL)))
         if not recording:
             self.warning.hide()
             self.level.setValue(0)
@@ -343,10 +354,11 @@ class RecordControls(QWidget):
         if rec.recording:
             self.time.setText(format_seconds(rec.elapsed()) + ("  paused" if rec.paused else ""))
             self.level.setValue(int(rec.level * 100))
-            self.pause_btn.setText("▶" if rec.paused else "❚❚")
+            self.pause_btn.setIcon(icons.icon("play") if rec.paused else icons.icon("pause"))
             if self.audio.live is not None and not rec.paused:
                 status = self.audio.live.status
                 self.live.setText(live_summary(status, rec.elapsed()))
+                self.live.setIcon(icons.dot(LIVE_COLORS.get(status.state, style.NEUTRAL)))
                 self.live.setToolTip(live_details(status, rec.elapsed()) + "\n\nClick for what the computer heard.")
 
     def _fill_live_menu(self) -> None:
@@ -364,8 +376,9 @@ class RecordControls(QWidget):
                 text = _clip(heard.text) or "(nothing recognised)"
                 if heard.text and heard.state in ("silence", "listening"):
                     text += "  — no clear speech then, probably made up"
-                icon = LIVE_ICONS.get(heard.state, "⚪")
-                self.live_menu.addAction(f"{icon} {format_seconds(heard.at)}  {text}").setEnabled(False)
+                action = self.live_menu.addAction(f"{format_seconds(heard.at)}  {text}")
+                action.setEnabled(False)
+                action.setIcon(icons.dot(LIVE_COLORS.get(heard.state, style.NEUTRAL)))
         elif not self.audio.settings.live_check:
             self.live_menu.addSeparator()
             self.live_menu.addAction("Live transcription check is off (Settings).").setEnabled(False)
@@ -409,7 +422,7 @@ class RecordControls(QWidget):
         box.setWindowTitle("No sound is being recorded")
         box.setText("UniVerse is recording, but the microphone delivers silence.")
         box.setInformativeText(
-            "• Pick another microphone from the 🎙 menu (an iPhone or headset mic may be selected but not nearby).\n"
+            "• Pick another microphone from the microphone menu (an iPhone or headset mic may be selected but not nearby).\n"
             "• Or allow microphone access for the app you launched UniVerse from (Terminal, iTerm, VS Code, Claude) "
             "in System Settings → Privacy & Security → Microphone, then restart UniVerse."
         )
@@ -429,14 +442,19 @@ class PlayerBar(QWidget):
         self.audio = audio
         self._dragging = False
 
-        self.play_btn = QToolButton(text="▶")
+        self.play_btn = QToolButton()
+        self.play_btn.setIcon(icons.icon("play"))
         self.play_btn.setObjectName("playButton")
         self.play_btn.setToolTip("Play / pause (⌘⇧Space)")
         self.play_btn.clicked.connect(audio.toggle_play)
-        back = QToolButton(text="↺ 10")
+        back = QToolButton(text="10")
+        back.setIcon(icons.icon("rotate-ccw"))
+        back.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         back.setToolTip("Back 10 seconds")
         back.clicked.connect(lambda: audio.seek(audio.player.position() - 10, play=audio.player.playing))
-        fwd = QToolButton(text="10 ↻")
+        fwd = QToolButton(text="10")
+        fwd.setIcon(icons.icon("rotate-cw"))
+        fwd.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         fwd.setToolTip("Forward 10 seconds")
         fwd.clicked.connect(lambda: audio.seek(audio.player.position() + 10, play=audio.player.playing))
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -474,9 +492,9 @@ class PlayerBar(QWidget):
             w.setVisible(has)
         self.empty.setVisible(not has)
         self.empty.setText(
-            "Recording… it will appear here when you press ■ Stop."
+            "Recording… it will appear here when you press Stop."
             if self.audio.recording
-            else "No recordings yet — press ● Record in the toolbar, or drop an audio file anywhere in the window."
+            else "No recordings yet — press Record in the toolbar, or drop an audio file anywhere in the window."
         )
         self.files.blockSignals(True)
         self.files.clear()
@@ -496,7 +514,7 @@ class PlayerBar(QWidget):
         if player.path is None:
             return
         pos = player.position()
-        self.play_btn.setText("❚❚" if player.playing else "▶")
+        self.play_btn.setIcon(icons.icon("pause") if player.playing else icons.icon("play"))
         self.time.setText(f"{_clock(pos)} / {_clock(player.duration)}")
         if not self._dragging:
             self.slider.setValue(int(pos * 10))
@@ -722,21 +740,21 @@ class RecordingsPanel(QWidget):
             self.refresh()
 
 
-LIVE_ICONS = {
-    "listening": "⚪",
-    "silence": "⚪",
-    "no_lecturer": "⚪",
-    "clear": "🟢",
-    "okay": "🟡",
-    "quiet": "🔴",
-    "neighbours": "🟠",
+LIVE_COLORS = {
+    "listening": style.NEUTRAL,
+    "silence": style.NEUTRAL,
+    "no_lecturer": style.NEUTRAL,
+    "clear": style.SUCCESS,
+    "okay": style.WARNING,
+    "quiet": style.DANGER,
+    "neighbours": style.ATTENTION,
 }
 HEARD_FRESH_S = 90  # older live checks no longer describe the room
 
 
 def live_summary(status: LiveStatus, now: float) -> str:
-    """Toolbar text, e.g. "🟢 Lecturer clear"."""
-    return f"{LIVE_ICONS.get(status.state, '⚪')} {status.message}"
+    """Toolbar text: the status message (the state shows as a coloured dot)."""
+    return status.message
 
 
 def live_details(status: LiveStatus, now: float) -> str:

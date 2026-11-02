@@ -23,6 +23,7 @@ from ..professors import ProfessorStore
 from ..services import moodle_ical, practice
 from ..services.study_store import StudyStore
 from ..storage import Lecture, Subject, Workspace
+from . import icons, style
 from .audio import PlayerBar
 from .claude_panel import exam_date
 from .note_editor import NoteEditor
@@ -70,7 +71,7 @@ class WelcomePage(QWidget):
         steps.setContentsMargins(0, 0, 0, 0)
         steps.setSpacing(12)
         steps.addWidget(_card("1 · Create a subject", "One per course — Corporate Finance, Physics, anything."))
-        steps.addWidget(_card("2 · Record the lecture", "Hit ● Record. Notes with ⌘T get timestamps that replay the audio."))
+        steps.addWidget(_card("2 · Record the lecture", "Press Record. Notes with ⌘T get timestamps that replay the audio."))
         steps.addWidget(_card("3 · Study with Claude", "Export for Claude, paste the reply back, get quizzes tailored to your professor."))
 
         self.events: list[moodle_ical.Event] = []
@@ -91,7 +92,8 @@ class WelcomePage(QWidget):
         self.primary = QPushButton()
         self.primary.setObjectName("primaryButton")
         self.primary.clicked.connect(self._primary_clicked)
-        self.record = QPushButton("●  Start recording now")
+        self.record = QPushButton("Start recording now")
+        self.record.setIcon(icons.dot(style.RECORD))
         self.record.setObjectName("recordButton")
         self.record.clicked.connect(self.quickRecord)
 
@@ -179,7 +181,7 @@ class WelcomePage(QWidget):
         self.subtitle.setText(
             f"{len(lectures)} lecture{'s' if len(lectures) != 1 else ''}. Open one below, or record a new lecture."
             if lectures
-            else "No lectures yet. Press ● Start recording now when class begins — or create an empty lecture first."
+            else "No lectures yet. Press Start recording now when class begins — or create an empty lecture first."
         )
         self.primary.setText("+  New lecture")
         self.steps.hide()
@@ -240,7 +242,8 @@ class LectureView(QWidget):
         header.addWidget(self.title)
         header.addWidget(self.meta)
 
-        close = QPushButton("✕")
+        close = QPushButton()
+        close.setIcon(icons.icon("x"))
         close.setFlat(True)
         close.setFixedWidth(28)
         close.setToolTip("Hide notes — bring them back from View → Notes (⌥⌘N)")

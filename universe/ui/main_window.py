@@ -384,7 +384,7 @@ class MainWindow(QMainWindow):
         self.recordings.moveRequested.connect(self.move_recordings)
         self.sidebar.recordingsDropped.connect(self.move_recordings)
         self.audio.silenceDetected.connect(
-            lambda: self.statusBar().showMessage("⚠ The microphone is silent — click the warning in the toolbar for help.")
+            lambda: self.statusBar().showMessage("The microphone is silent — click the warning in the toolbar for help.")
         )
         self.audio.error.connect(lambda msg: QMessageBox.warning(self, "Audio", msg))
 
@@ -863,8 +863,8 @@ class MainWindow(QMainWindow):
             if self._is_open(lecture):
                 self.transcript.refresh()
             self.statusBar().showMessage(
-                f"Sorted: ★ {counts['exam']} exam-relevant · ❓ {counts['question']} questions · "
-                f"🔇 {counts['off_topic']} private (left out of export & search).",
+                f"Sorted: {counts['exam']} exam-relevant · {counts['question']} questions · "
+                f"{counts['off_topic']} private (left out of export & search).",
                 10000,
             )
             self.schedule_index(lecture)

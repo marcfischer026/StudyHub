@@ -1,8 +1,9 @@
 """Transcript pane: whisper.cpp segments with relevance labels.
 
-Click a line to hear it. Exam-relevant lines are highlighted (★), questions and
-answers marked, private talk greyed out, other voices than the lecturer's tagged
-(👥) — and right-click corrects any label or speaker. With several recordings in
+Click a line to hear it. Exam-relevant lines are highlighted with a star icon,
+questions and answers carry their own icons, private talk is greyed out, other
+voices than the lecturer's are named — and right-click corrects any label or
+speaker. With several recordings in
 a lecture, "All recordings" shows them as one transcript in recording order.
 
 Lines show the time of day they were said. Pauses and the time between
@@ -15,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -35,13 +36,12 @@ from ..services.audio_player import duration
 from ..services.timestamps import format_seconds
 from ..services.transcriber import Transcript
 from ..storage import Lecture, clock_time, pauses, read_timeline, recording_time
-from .style import ACCENT
+from . import icons, style
 
 ROLE = Qt.ItemDataRole.UserRole
 EXAM_BG = QColor(255, 196, 0, 70)  # translucent so it works in light and dark mode
-QUESTION_BG = QColor(ACCENT)
+QUESTION_BG = QColor(style.ACCENT)
 QUESTION_BG.setAlpha(35)
-ICONS = {"question": "❓ ", "answer": "💬 ", "off_topic": "🔇 "}
 SOURCE_NAMES = {"rules": "exam cue", "local": "local AI", "claude": "Claude", "manual": "you"}
 
 ALL_RECORDINGS = "All recordings (in order)"
@@ -49,12 +49,12 @@ MIN_GAP_S = 60  # shorter breaks between recordings are not worth a row
 
 FILTERS = (
     "All",
-    "★ Exam-relevant",
+    "Exam-relevant",
     "Questions & answers",
     "Hide private talk",
     "Private talk only",
-    "🎓 Lecturer only",
-    "👥 Other speakers",
+    "Lecturer only",
+    "Other speakers",
 )
 
 
@@ -193,7 +193,7 @@ class TranscriptPanel(QWidget):
     def _heading(self, name: str, part: int, start: datetime, end: datetime) -> QListWidgetItem:
         """Divider between recordings in the "All recordings" view: when each ran and for how long."""
         minutes = round((end - start).total_seconds() / 60)
-        item = self._info(f"🎙  {part + 1}. {name}  ·  {start:%a %d.%m.  %H:%M}–{end:%H:%M}  ·  {minutes} min")
+        item = self._info(f"{part + 1}. {name}  ·  {start:%a %d.%m.  %H:%M}–{end:%H:%M}  ·  {minutes} min")
         font = QFont(item.font())
         font.setBold(True)
         item.setFont(font)
@@ -203,7 +203,7 @@ class TranscriptPanel(QWidget):
         """A stretch of time with no audio: a pause, or the time between two recordings."""
         minutes = max(1, round((end - start).total_seconds() / 60))
         span = f"{start:%H:%M}–{end:%H:%M}" if start.date() == end.date() else f"{start:%d.%m. %H:%M}–{end:%d.%m. %H:%M}"
-        return self._info(f"⏸  {span}  ·  {minutes} min {what}")
+        return self._info(f"{span}  ·  {minutes} min {what}")
 
     def _info(self, text: str) -> QListWidgetItem:
         item = QListWidgetItem(text)
@@ -262,11 +262,20 @@ class TranscriptPanel(QWidget):
 
     def _style_item(self, item: QListWidgetItem) -> None:
         seg = self._segment(item)
-        star = "★ " if seg.exam else ""
-        voice = "" if not seg.speaker else "🎓 " if seg.speaker == speakers.LECTURER else f"👥 {speakers.speaker_name(seg.speaker)}: "
+        voice = "" if not seg.speaker or seg.speaker == speakers.LECTURER else f"{speakers.speaker_name(seg.speaker)}: "
         part = item.data(ROLE)[3]
         clock = clock_time(self.parts[part][0], seg.start, self.timelines[part])
-        item.setText(f"{star}{ICONS.get(seg.category, '')}{clock:%H:%M:%S}  {voice}{seg.text}")
+        item.setText(f"{clock:%H:%M:%S}  {voice}{seg.text}")
+        if seg.exam:
+            item.setIcon(icons.icon("star", style.WARNING))
+        elif seg.category == "question":
+            item.setIcon(icons.icon("circle-help", style.tokens().accent))
+        elif seg.category == "answer":
+            item.setIcon(icons.icon("message-circle", style.tokens().accent))
+        elif seg.category == "off_topic":
+            item.setIcon(icons.icon("volume-x", style.NEUTRAL))
+        else:
+            item.setIcon(QIcon())
         font = QFont(item.font())
         font.setItalic(seg.private)
         font.setBold(seg.exam)
@@ -301,12 +310,12 @@ class TranscriptPanel(QWidget):
         for item in self._segment_items():
             seg = self._segment(item)
             show = {
-                "★ Exam-relevant": seg.exam,
+                "Exam-relevant": seg.exam,
                 "Questions & answers": seg.category in ("question", "answer"),
                 "Hide private talk": not seg.private,
                 "Private talk only": seg.private,
-                "🎓 Lecturer only": seg.speaker == speakers.LECTURER,
-                "👥 Other speakers": bool(seg.speaker) and seg.speaker != speakers.LECTURER,
+                "Lecturer only": seg.speaker == speakers.LECTURER,
+                "Other speakers": bool(seg.speaker) and seg.speaker != speakers.LECTURER,
             }.get(mode, True)
             item.setHidden(not show or (bool(needle) and needle not in seg.text.lower()))
 
@@ -316,7 +325,7 @@ class TranscriptPanel(QWidget):
         private = sum(s.private for s in segs)
         questions = sum(s.category == "question" for s in segs)
         unsorted = sum(not s.category for s in segs)
-        parts = [f"★ {exam} exam-relevant", f"❓ {questions} questions", f"🔇 {private} private (left out of export & search)"]
+        parts = [f"{exam} exam-relevant", f"{questions} questions", f"{private} private (left out of export & search)"]
         if unsorted:
             parts.append(f"{unsorted} not sorted yet")
         self.summary.setText(" · ".join(parts))
@@ -342,21 +351,26 @@ class TranscriptPanel(QWidget):
 
         menu = QMenu(self)
         exam_now = all(s.exam for s in segs)
-        menu.addAction("☆ Not exam-relevant" if exam_now else "★ Exam-relevant", lambda: self._set(live(), exam=not exam_now))
+
+        def add(text: str, icon: str, slot) -> None:
+            action = menu.addAction(text, slot)
+            if action is not None:  # the regression tests' stub menu returns nothing
+                action.setIcon(icons.icon(icon))
+
+        add("Not exam-relevant" if exam_now else "Mark exam-relevant", "star-off" if exam_now else "star",
+            lambda: self._set(live(), exam=not exam_now))
         menu.addSeparator()
-        for category, icon in (("lecture", "📖 "), ("question", "❓ "), ("answer", "💬 "), ("off_topic", "🔇 ")):
-            menu.addAction(icon + relevance.CATEGORY_LABELS[category], lambda c=category: self._set(live(), category=c))
+        for category, icon in (("lecture", "book-open"), ("question", "circle-help"), ("answer", "message-circle"), ("off_topic", "volume-x")):
+            add(relevance.CATEGORY_LABELS[category], icon, lambda c=category: self._set(live(), category=c))
         menu.addSeparator()
-        menu.addAction("🎓 The lecturer said this", lambda: self._set_speaker(live(), speakers.LECTURER))
-        menu.addAction("👥 Someone else said this", lambda: self._set_speaker(live(), speakers.OTHER))
+        add("The lecturer said this", "graduation-cap", lambda: self._set_speaker(live(), speakers.LECTURER))
+        add("Someone else said this", "users", lambda: self._set_speaker(live(), speakers.OTHER))
         voices = {s.speaker for s in segs}
         parts = {i.data(ROLE)[3] for i in items}  # speaker ids only mean something within one recording
         if len(voices) == 1 and len(parts) == 1 and (voice := voices.pop()) not in ("", speakers.LECTURER, speakers.OTHER):
             part = parts.pop()
-            menu.addAction(
-                f"🎓 {speakers.speaker_name(voice)} is the lecturer (whole recording)",
-                lambda: self._make_lecturer(voice, part),
-            )
+            add(f"{speakers.speaker_name(voice)} is the lecturer (whole recording)", "graduation-cap",
+                lambda: self._make_lecturer(voice, part))
         menu.exec(self.list.viewport().mapToGlobal(pos))
 
     def _set_speaker(self, items: list[QListWidgetItem], speaker: str) -> None:

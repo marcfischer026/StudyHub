@@ -13,14 +13,14 @@ os.environ.setdefault("UNIVERSE_DATA_DIR", tempfile.mkdtemp())
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
-from PySide6.QtGui import QTextBlockFormat, QTextCursor  # noqa: E402
+from PySide6.QtGui import QTextBlockFormat, QTextCharFormat, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import universe  # noqa: E402,F401
 from universe.services import claude_export, slide_links, subject_model  # noqa: E402
 from universe.storage import Workspace  # noqa: E402
-from universe.ui.note_editor import NoteEditor  # noqa: E402
+from universe.ui.note_editor import HEADING_SIZE, LINE_CHARS, NoteEditor  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -221,6 +221,42 @@ class SlideLinkTests(unittest.TestCase):
         view = subject_model.load_subject(self.lecture.subject)
         return claude_export.render_notes(view.lectures[0])
 
+
+
+class ReadingLayoutTests(unittest.TestCase):
+    """Notes read like a page: calm headings, lines no longer than about 75 characters."""
+
+    def setUp(self):
+        self.lecture = Workspace(Path(tempfile.mkdtemp())).create_subject("Statistik").create_lecture("Woche 3")
+        self.lecture.write_notes("# Regression\n\nKleinste Quadrate\n\n## Annahmen\n")
+        self.notes = NoteEditor(time_source=lambda: None)
+        self.notes.set_lecture(self.lecture)
+
+    def size_adjustment(self, text: str) -> int:
+        block = self.notes.edit.document().find(text).block()
+        return QTextCursor(block).charFormat().property(QTextCharFormat.Property.FontSizeAdjustment) or 0
+
+    def test_loaded_headings_get_the_calmer_sizes(self):
+        self.assertEqual(self.size_adjustment("Regression"), HEADING_SIZE[1])
+        self.assertEqual(self.size_adjustment("Annahmen"), HEADING_SIZE[2])
+        self.assertEqual(self.size_adjustment("Kleinste"), 0)
+
+    def test_sizing_headings_neither_saves_nor_changes_the_markdown(self):
+        self.assertFalse(self.notes.dirty)
+        self.assertIn("# Regression", self.notes.edit.toMarkdown())
+        self.assertIn("## Annahmen", self.notes.edit.toMarkdown())
+
+    def test_wide_panes_get_margins_not_longer_lines(self):
+        edit = self.notes.edit
+        self.notes.resize(2000, 600)
+        self.notes.show()
+        self.addCleanup(self.notes.hide)
+        app.processEvents()
+        longest = edit.fontMetrics().averageCharWidth() * LINE_CHARS + 2 * edit.document().documentMargin()
+        self.assertLessEqual(edit.viewport().width(), longest + 2)
+        self.notes.resize(400, 600)
+        app.processEvents()
+        self.assertEqual(edit.viewportMargins().left(), 0)
 
 if __name__ == "__main__":
     unittest.main()

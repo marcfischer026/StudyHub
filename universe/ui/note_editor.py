@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QRegularExpression, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QRegularExpression, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 
 from ..services import slide_links, timestamps
 from ..storage import DOC_TYPES, Lecture
-from . import style
+from . import icons, style
 
 
 class _StampHighlighter(QSyntaxHighlighter):
@@ -109,6 +109,12 @@ def describe(context: dict) -> tuple[str | None, str | None]:
     return audio, pdf
 
 
+# Heading sizes as QTextCharFormat.FontSizeAdjustment (0 = body size). Calmer than Qt's
+# Markdown defaults (3/2/1), so a heading fits a narrow column without breaking mid-word.
+HEADING_SIZE = {1: 2, 2: 1, 3: 0}
+LINE_CHARS = 75  # longest line in characters; wider panes get side margins instead
+
+
 class _StampTextEdit(QTextEdit):
     stampClicked = Signal(int)
     blockClicked = Signal(object)  # QTextBlock, ⌘-clicked outside a stamp
@@ -119,6 +125,15 @@ class _StampTextEdit(QTextEdit):
         # Set by NoteEditor: before_key(event) -> True if it handled the key; after_key(event).
         self.before_key = lambda _event: False
         self.after_key = lambda _event: None
+
+    def resizeEvent(self, event) -> None:
+        # Cap the line length for reading: lines past ~75 characters are harder to follow.
+        longest = self.fontMetrics().averageCharWidth() * LINE_CHARS + 2 * self.document().documentMargin()
+        # self.width(), not event.size(): this event also reports the viewport, which the margins shrink.
+        side = int(max(0, (self.width() - longest) // 2))
+        if self.viewportMargins().left() != side:  # setting them resizes again
+            self.setViewportMargins(side, 0, side, 0)
+        super().resizeEvent(event)
 
     def keyPressEvent(self, event) -> None:
         if not self.before_key(event):
@@ -214,6 +229,9 @@ class NoteEditor(QWidget):
 
         toolbar = QToolBar()
         toolbar.setObjectName("formatBar")
+        # Icons where there is one (tooltips name them), text for B / I / H1–H3: everything fits a narrow column.
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        toolbar.setIconSize(QSize(icons.SIZE, icons.SIZE))
         # Lit up while the text at the cursor has that format (see _update_format_buttons).
         self.format_actions: dict[str, QAction] = {}
         self._format_action(toolbar, "bold", "B", "Bold (⌘B, or type **text**)", QKeySequence.StandardKey.Bold, self._toggle_bold)
@@ -221,13 +239,13 @@ class NoteEditor(QWidget):
         for level in (1, 2, 3):
             self._format_action(toolbar, f"h{level}", f"H{level}", f"Heading {level} (⌥⌘{level}, or type {'#' * level} )", f"Ctrl+Alt+{level}", lambda _=False, lv=level: self._heading(lv))
         self._action(None, "Normal text", "Normal text (⌥⌘0)", "Ctrl+Alt+0", lambda: self._heading(0))
-        self._format_action(toolbar, "bullets", "• List", "Bullet list (⇧⌘L, or type - )", "Ctrl+Shift+L", lambda: self._toggle_list(BULLET_STYLES))
-        self._format_action(toolbar, "numbered", "1. List", "Numbered list (⇧⌘O, or type 1. )", "Ctrl+Shift+O", lambda: self._toggle_list(NUMBERED))
-        self._format_action(toolbar, "checkbox", "☐ To-do", "Checkbox (⇧⌘K, or type [ ] ) — click the box to tick it", "Ctrl+Shift+K", lambda: self._toggle_checkbox())
-        self._action(toolbar, "→ Slide", "Link the PDF page in view; click the link to open it again (⌘L)", "Ctrl+L", lambda: self.insert_slide_link())
+        self._format_action(toolbar, "bullets", "List", "Bullet list (⇧⌘L, or type - )", "Ctrl+Shift+L", lambda: self._toggle_list(BULLET_STYLES), icon="list")
+        self._format_action(toolbar, "numbered", "List", "Numbered list (⇧⌘O, or type 1. )", "Ctrl+Shift+O", lambda: self._toggle_list(NUMBERED), icon="list-ordered")
+        self._format_action(toolbar, "checkbox", "To-do", "Checkbox (⇧⌘K, or type [ ] ) — click the box to tick it", "Ctrl+Shift+K", lambda: self._toggle_checkbox(), icon="square-check")
+        self._action(toolbar, "Slide", "Link the PDF page in view; click the link to open it again (⌘L)", "Ctrl+L", lambda: self.insert_slide_link(), icon="link")
         self._action(None, "Find", "Find in notes (⌘F)", QKeySequence.StandardKey.Find, self._show_find)
         toolbar.addSeparator()
-        self._action(toolbar, "⏱ Timestamp", "Insert timestamp at the current recording/playback time (⌘T)", None, self.insert_timestamp)
+        self._action(toolbar, "Timestamp", "Insert timestamp at the current recording/playback time (⌘T)", None, self.insert_timestamp, icon="timer")
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
@@ -254,11 +272,13 @@ class NoteEditor(QWidget):
         find_row.setContentsMargins(0, 0, 0, 0)
         find_row.addWidget(self.find_field, 1)
         find_row.addWidget(self.find_count)
-        for text, tip, step in (("▲", "Previous (⇧↩)", -1), ("▼", "Next (↩)", 1)):
-            button = QToolButton(text=text, toolTip=tip)
+        for icon, tip, step in (("chevron-up", "Previous (⇧↩)", -1), ("chevron-down", "Next (↩)", 1)):
+            button = QToolButton(toolTip=tip)
+            button.setIcon(icons.icon(icon))
             button.clicked.connect(lambda _=False, step=step: self._find(step))
             find_row.addWidget(button)
-        close = QToolButton(text="✕", toolTip="Close (Esc)")
+        close = QToolButton(toolTip="Close (Esc)")
+        close.setIcon(icons.icon("x"))
         close.clicked.connect(self._hide_find)
         find_row.addWidget(close)
         self.find_bar.hide()
@@ -271,9 +291,11 @@ class NoteEditor(QWidget):
         layout.addWidget(self.edit, 1)
         self.setEnabled(False)
 
-    def _action(self, toolbar: QToolBar | None, text: str, tip: str, shortcut, slot) -> QAction:
+    def _action(self, toolbar: QToolBar | None, text: str, tip: str, shortcut, slot, icon: str | None = None) -> QAction:
         """A formatting command; without a toolbar it is a keyboard shortcut only."""
         action = QAction(text, self, toolTip=tip)
+        if icon is not None:
+            action.setIcon(icons.icon(icon))
         if shortcut is not None:
             action.setShortcut(QKeySequence(shortcut))
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -284,8 +306,8 @@ class NoteEditor(QWidget):
             self.addAction(action)
         return action
 
-    def _format_action(self, toolbar: QToolBar, key: str, text: str, tip: str, shortcut, slot) -> None:
-        action = self._action(toolbar, text, tip, shortcut, slot)
+    def _format_action(self, toolbar: QToolBar, key: str, text: str, tip: str, shortcut, slot, icon: str | None = None) -> None:
+        action = self._action(toolbar, text, tip, shortcut, slot, icon=icon)
         action.setCheckable(True)
         action.triggered.connect(self._update_format_buttons)  # the click toggled it; the text decides
         self.format_actions[key] = action
@@ -319,6 +341,7 @@ class NoteEditor(QWidget):
         # Figures are linked as "figures/x.png", relative to the lecture folder.
         self.edit.document().setBaseUrl(QUrl.fromLocalFile(f"{lecture.path}/") if lecture else QUrl())
         self.edit.setMarkdown(lecture.read_notes() if lecture else "")
+        self._size_headings()
         self._fit_images()
         self._restore_anchors(lecture.read_anchors() if lecture else [])
         self._loading = False
@@ -335,7 +358,7 @@ class NoteEditor(QWidget):
         self.lecture.write_notes(timestamps.normalize(self.edit.toMarkdown()))
         self.lecture.write_anchors(self._collect_anchors())
         self.dirty = False
-        self.status.setText("✓ Saved")
+        self.status.setText("Saved")
         self.saved.emit()
         return True
 
@@ -385,6 +408,19 @@ class NoteEditor(QWidget):
         cursor.insertText(" ", plain)
         self.edit.setTextCursor(cursor)
         self.edit.setFocus()
+
+    def _size_headings(self) -> None:
+        """Give loaded headings the editor's sizes (Qt's Markdown reader sets its own)."""
+        block = self.edit.document().begin()
+        while block.isValid():
+            level = block.blockFormat().headingLevel()
+            if level:
+                char_fmt = QTextCharFormat()
+                char_fmt.setProperty(QTextCharFormat.Property.FontSizeAdjustment, HEADING_SIZE.get(level, 0))
+                line = QTextCursor(block)
+                line.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+                line.mergeCharFormat(char_fmt)
+            block = block.next()
 
     def _fit_images(self) -> None:
         """Show figures at a readable size (Markdown does not store a width)."""
@@ -528,8 +564,7 @@ class NoteEditor(QWidget):
         block_fmt.setHeadingLevel(level)
         cursor.setBlockFormat(block_fmt)
         char_fmt = QTextCharFormat()
-        # The sizes Qt's own Markdown reader uses, so headings look the same after reopening.
-        char_fmt.setProperty(QTextCharFormat.Property.FontSizeAdjustment, 4 - level if level else 0)
+        char_fmt.setProperty(QTextCharFormat.Property.FontSizeAdjustment, HEADING_SIZE.get(level, 0))
         char_fmt.setFontWeight(QFont.Weight.Bold if level else QFont.Weight.Normal)
         line = QTextCursor(cursor.block())
         line.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)

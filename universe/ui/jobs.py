@@ -32,6 +32,7 @@ from ..config import Settings
 from ..services import lmstudio, local_llm
 from ..services.jobcontrol import JobControl
 from ..services.system_monitor import Snapshot, SystemMonitor
+from . import icons
 from .style import WARNING
 from .workers import Worker
 
@@ -322,7 +323,7 @@ def _bar(value: float | None) -> str:
 
 
 class ActivityIndicator(QWidget):
-    """Status-bar field: what the local AI is doing, load, battery, ⏸."""
+    """Status-bar field: what the local AI is doing, load, battery, pause."""
 
     def __init__(self, jobs: JobManager, settings: Settings, parent=None):
         super().__init__(parent)
@@ -342,7 +343,8 @@ class ActivityIndicator(QWidget):
         self.mini = QProgressBar(maximum=100, textVisible=False)
         self.mini.setObjectName("activityBar")
         self.mini.setFixedSize(60, 6)
-        self.pause_btn = QToolButton(text="⏸")
+        self.pause_btn = QToolButton()
+        self.pause_btn.setIcon(icons.icon("pause"))
         self.pause_btn.setObjectName("activityPause")
         self.pause_btn.clicked.connect(self.toggle_pause)
 
@@ -406,12 +408,12 @@ class ActivityIndicator(QWidget):
         snap = self.snapshot
         if jobs.paused:
             why = {"manual": "Paused", "battery": f"Paused — battery {snap.battery}%", "unplugged": "Paused — on battery"}
-            text = "⏸ " + why.get(jobs.pause_reason, "Paused")
+            text = why.get(jobs.pause_reason, "Paused")
             if jobs.busy:
                 text += f" · {len(jobs.queue) + (job is not None)} waiting"
         elif job:
             title = job.title if len(job.title) <= 30 else job.title[:29] + "…"
-            text = f"⚙ {title} · {job.progress}%"
+            text = f"{title} · {job.progress}%"
             if jobs.queue:
                 text += f" (+{len(jobs.queue)})"
         else:
@@ -419,13 +421,14 @@ class ActivityIndicator(QWidget):
         if jobs.busy and snap.cpu is not None:
             text += f"  ·  CPU {_bar(snap.cpu)}  GPU {_bar(snap.gpu)}"
         if self.models.instances:
-            text += f"  ·  🧠 {self.models.loaded_gb:.1f} GB"
+            text += f"  ·  {self.models.loaded_gb:.1f} GB loaded"
         if snap.battery is not None:
-            text += f"  ·  {'⚡' if snap.plugged else '🔋'}{snap.battery}%"
+            text += f"  ·  Battery {snap.battery}%" + (" charging" if snap.plugged else "")
         self.label.setText(text)
         self.mini.setVisible(job is not None)
         self.mini.setValue(job.progress if job else 0)
-        self.pause_btn.setText("▶" if jobs.paused else "⏸")
+        self.pause_btn.setIcon(icons.icon("play" if jobs.paused else "pause"))
+        self.pause_btn.setText("")
         self.pause_btn.setToolTip("Resume background AI work" if jobs.paused else "Pause background AI work")
         if self.popup and self.popup.isVisible():
             self.popup.refresh()
@@ -578,7 +581,8 @@ class ActivityPopup(QFrame):
     def refresh(self) -> None:
         self._refresh_models()
         jobs, job, snap = self.jobs, self.jobs.current, self.indicator.snapshot
-        self.pause_btn.setText("▶ Resume" if jobs.paused else "⏸ Pause all")
+        self.pause_btn.setText("Resume" if jobs.paused else "Pause all")
+        self.pause_btn.setIcon(icons.icon("play" if jobs.paused else "pause"))
         if job:
             state = {"paused": "paused", "running": "running"}.get(job.status, job.status)
             eta = job.eta()

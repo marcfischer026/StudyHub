@@ -216,7 +216,7 @@ class ToolbarTextTests(unittest.TestCase):
 
         heard = lc.Heard(at=50, text="Die Ableitung", state="clear")
         status = lc.LiveStatus("quiet", "Lecturer too quiet — ask to speak up", -60, -52, 8, None, True, heard, [heard])
-        self.assertEqual(live_summary(status, 60), "🔴 Lecturer too quiet — ask to speak up")
+        self.assertEqual(live_summary(status, 60), "Lecturer too quiet — ask to speak up")
         details = live_details(status, 60)
         self.assertIn("8 dB above the room background", details)
         self.assertIn("Heard 10 s ago: “Die Ableitung”", details)

@@ -135,7 +135,7 @@ class AllRecordingsViewTests(unittest.TestCase):
         self.assertEqual([s.exam for s in first.segments], [False, False])
 
     def test_filter_skips_headings(self):
-        self.panel.filter.setCurrentText("★ Exam-relevant")
+        self.panel.filter.setCurrentText("Exam-relevant")
         self.assertFalse(self.panel.list.item(0).isHidden())  # heading stays as a divider
         self.assertTrue(self.panel.list.item(1).isHidden())
 

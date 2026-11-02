@@ -87,12 +87,12 @@ class NarrowWindowTests(unittest.TestCase):
         self.assertFalse(bench.is_shown("inspector"))  # stepped aside first
         self.assertTrue(bench.wanted["inspector"])  # ... but comes back with room
         viewer = window.documents.viewer
-        self.assertEqual(viewer.snipper.text(), "✂")  # short labels, every tool still there
+        self.assertEqual(viewer.snipper.text(), "")  # short labels, every tool still there
         window.resize(1600, 900)
         bench.center.setSizes([500, 700])
         app.processEvents()
         self.assertTrue(bench.is_shown("inspector"))
-        self.assertEqual(viewer.snipper.text(), "✂ Snip")
+        self.assertEqual(viewer.snipper.text(), "Snip")
 
     def test_asking_for_a_part_in_a_narrow_window_makes_room_for_it(self):
         window = self.make_window()

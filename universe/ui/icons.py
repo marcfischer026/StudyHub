@@ -58,6 +58,7 @@ def _icon(name: str, color: str, disabled: str, on: str, size: int) -> QIcon:
         result.addPixmap(pixmap(name, color, size, ratio), QIcon.Mode.Normal, QIcon.State.Off)
         result.addPixmap(pixmap(name, on or color, size, ratio), QIcon.Mode.Normal, QIcon.State.On)
         result.addPixmap(pixmap(name, disabled, size, ratio), QIcon.Mode.Disabled)
+        result.addPixmap(pixmap(name, "white", size, ratio), QIcon.Mode.Selected)  # on the accent highlight
     return result
 
 
@@ -73,3 +74,26 @@ def icon(name: str, color: QColor | str | None = None, size: int = SIZE, on_colo
     hexargb = QColor.NameFormat.HexArgb
     on = QColor(on_color).name(hexargb) if on_color is not None else ""
     return _icon(name, normal.name(hexargb), disabled.name(hexargb), on, size)
+
+
+@lru_cache(maxsize=64)
+def _dot(color: str, size: int) -> QIcon:
+    result = QIcon()
+    for ratio in (1.0, 2.0):
+        image = QPixmap(round(size * ratio), round(size * ratio))
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        inset = 3 * ratio  # a small dot centred in the icon box, like a status light
+        painter.drawEllipse(image.rect().adjusted(inset, inset, -inset, -inset))
+        painter.end()
+        image.setDevicePixelRatio(ratio)
+        result.addPixmap(image)
+    return result
+
+
+def dot(color: QColor | str, size: int = SIZE) -> QIcon:
+    """A filled status light (e.g. microphone check: green clear, red too quiet)."""
+    return _dot(QColor(color).name(QColor.NameFormat.HexArgb), size)

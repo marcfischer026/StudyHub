@@ -197,10 +197,10 @@ class TranscriptPanelTests(unittest.TestCase):
         tagged_transcript().save(lecture.dir("transcripts"))
         panel = TranscriptPanel()
         panel.set_lecture(lecture)
-        self.assertIn("🎓", panel.list.item(0).text())
-        self.assertIn("👥 Speaker 2:", panel.list.item(1).text())
+        self.assertNotIn("Speaker", panel.list.item(0).text())
+        self.assertIn("Speaker 2:", panel.list.item(1).text())
 
-        panel.filter.setCurrentText("👥 Other speakers")
+        panel.filter.setCurrentText("Other speakers")
         self.assertEqual([panel.list.item(i).isHidden() for i in range(6)], [True, False, True, False, True, True])
 
         panel._make_lecturer("speaker_2")

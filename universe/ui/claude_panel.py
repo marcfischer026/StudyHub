@@ -434,7 +434,7 @@ class ClaudePanel(ScopedPanel):
         self.uncertain = text_label(muted=True)
         self.uncertain.hide()
         self.plan_label = text_label()
-        self.plan_label.setStyleSheet("font-weight: 600;")
+        self.plan_label.setObjectName("planLabel")
         self.warnings = text_label(muted=True, selectable=True)
         self.warnings.hide()
         self.export_btn = self._button("Export .md files", self.export, primary=True)

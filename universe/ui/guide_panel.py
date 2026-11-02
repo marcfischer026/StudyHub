@@ -244,7 +244,7 @@ class GuidePanel(ScopedPanel):
             card = self.cards.get(objective.get("id"))
             recall = fsrs.retrievability(card.memory, now) if card and card.memory else None
             state = f"{recall:.0%}" if recall is not None else "new"
-            badge = " ⚠ source not verified" if objective.get("verified") is False else ""
+            badge = f" <small style='color:{WARNING}'>· source not verified</small>" if objective.get("verified") is False else ""
             rows.append(
                 f"<li><span style='color:{recall_colour(recall)}'>{state}</span> {_e(objective.get('statement', ''))}"
                 f"{badge} <small>{self._sources(objective.get('sources'))}</small></li>"

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..storage import Lecture, Subject, Workspace
+from . import icons
 from .audio import recordings_from_mime
 from .style import ACCENT
 
@@ -122,10 +123,12 @@ class Sidebar(QWidget):
         self.empty.setObjectName("muted")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        add_subject = QPushButton("+ Subject")
+        add_subject = QPushButton("Subject")
+        add_subject.setIcon(icons.icon("plus"))
         add_subject.setToolTip("New subject (⌘⇧N)")
         add_subject.clicked.connect(self.new_subject)
-        add_lecture = QPushButton("+ Lecture")
+        add_lecture = QPushButton("Lecture")
+        add_lecture.setIcon(icons.icon("plus"))
         add_lecture.setToolTip("New lecture in the selected subject (⌘N)")
         add_lecture.clicked.connect(self.new_lecture)
 
@@ -152,7 +155,8 @@ class Sidebar(QWidget):
         self.empty.setVisible(not subjects)
         self.tree.setVisible(bool(subjects))
         for subject in subjects:
-            s_item = QTreeWidgetItem([f"📚  {subject.name}"])
+            s_item = QTreeWidgetItem([subject.name])
+            s_item.setIcon(0, icons.icon("library"))
             s_item.setData(0, ROLE, subject)
             font = s_item.font(0)
             font.setBold(True)
@@ -161,8 +165,8 @@ class Sidebar(QWidget):
             if isinstance(select, Subject) and select.path == subject.path:
                 target = s_item
             for lecture in subject.lectures():
-                icon = "🎙" if lecture.audio_files() else "📝"
-                l_item = QTreeWidgetItem([f"{icon}  {lecture.name}"])
+                l_item = QTreeWidgetItem([lecture.name])
+                l_item.setIcon(0, icons.icon("audio-lines") if lecture.audio_files() else icons.icon("notebook-pen"))
                 l_item.setData(0, ROLE, lecture)
                 s_item.addChild(l_item)
                 if isinstance(select, Lecture) and select.path == lecture.path:
@@ -174,15 +178,15 @@ class Sidebar(QWidget):
             self.tree.setCurrentItem(target)
 
     def update_icons(self) -> None:
-        """🎙 for lectures with recordings, 📝 for the rest — after recordings moved."""
+        """Lecture icons again after recordings moved: a waveform with recordings, a notebook without."""
         for i in range(self.tree.topLevelItemCount()):
             s_item = self.tree.topLevelItem(i)
             for j in range(s_item.childCount()):
                 item = s_item.child(j)
                 lecture = item.data(0, ROLE)
                 if lecture.path.exists():
-                    icon = "🎙" if lecture.audio_files() else "📝"
-                    item.setText(0, f"{icon}  {lecture.name}")
+                    item.setText(0, lecture.name)
+                    item.setIcon(0, icons.icon("audio-lines") if lecture.audio_files() else icons.icon("notebook-pen"))
 
     def select_by_name(self, subject_name: str, lecture_name: str) -> None:
         subject = self.workspace.subject(subject_name) if subject_name else None

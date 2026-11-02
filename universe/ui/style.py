@@ -26,6 +26,7 @@ WARNING = "#C27C0E"
 SUCCESS = "#1A7F37"
 DANGER = "#CF222E"
 NEUTRAL = "#8A8F98"  # "not started yet", e.g. unseen topics
+ATTENTION = "#D9622B"  # between warning and danger, e.g. other voices close to the microphone
 
 # Back-compat for modules that still import the old names.
 ACCENT = ACCENT_LIGHT
@@ -188,6 +189,8 @@ def stylesheet(t: Tokens | None = None) -> str:
     QLabel#slidePage {{ background: white; border: 1px solid {t.border}; }}
     QWidget#playerBar {{ border-top: 1px solid {t.border}; }}
     QToolButton#playButton {{ font-size: 14px; min-width: 26px; }}
+    QLabel#practiceHeader, QLabel#planLabel {{ font-weight: 600; }}
+    QLabel#practiceStem {{ font-size: 15px; font-weight: 600; }}
     """
 
 

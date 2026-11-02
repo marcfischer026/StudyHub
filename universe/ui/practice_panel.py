@@ -82,7 +82,7 @@ class PracticePanel(ScopedPanel):
         self._reviewing: list[Result] = []  # mock answers the student still has to grade
 
         self.header = text_label()
-        self.header.setStyleSheet("font-weight: 600;")
+        self.header.setObjectName("practiceHeader")
         self.mode_choice = QComboBox()
         for text, value in MODES:
             self.mode_choice.addItem(text, value)
@@ -109,7 +109,7 @@ class PracticePanel(ScopedPanel):
 
         self.meta = text_label(muted=True)
         self.stem = text_label(selectable=True)
-        self.stem.setStyleSheet("font-size: 15px; font-weight: 600;")
+        self.stem.setObjectName("practiceStem")
         self.options = QVBoxLayout()
         self.option_group = QButtonGroup(self)
         self.answer_line = QLineEdit(placeholderText="Your result")
@@ -314,7 +314,7 @@ class PracticePanel(ScopedPanel):
         if question.get("again"):
             parts.append("second chance")
         if question.get("verified") is False:
-            parts.append("⚠ source not verified")
+            parts.append("source not verified")
         if self.is_mock:
             parts.insert(0, f"Mock · {self._time_left()} left")
         return " · ".join(parts)

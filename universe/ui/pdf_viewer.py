@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import icons
 from .style import ACCENT
 
 PAGE_GAP = 12
@@ -161,23 +162,28 @@ class PdfViewer(QWidget):
         self._drag_start: pymupdf.Point | None = None
         self._drag_word: int | None = None  # index of the word the drag started on
 
-        self.prev_btn = QToolButton(text="◀")
+        self.prev_btn = QToolButton()
+        self.prev_btn.setIcon(icons.icon("chevron-left"))
         self.prev_btn.setToolTip("Previous page (←)")
         self.prev_btn.clicked.connect(lambda: self.go_to_page(self.page.value() - 1))
-        self.next_btn = QToolButton(text="▶")
+        self.next_btn = QToolButton()
+        self.next_btn.setIcon(icons.icon("chevron-right"))
         self.next_btn.setToolTip("Next page (→)")
         self.next_btn.clicked.connect(lambda: self.go_to_page(self.page.value() + 1))
         self.page = QSpinBox(minimum=1, maximum=1)
         self.page.setKeyboardTracking(False)
         self.page.valueChanged.connect(self.go_to_page)
         self.page_count = QLabel("/ 0")
-        zoom_out = QToolButton(text="−")
+        zoom_out = QToolButton()
+        zoom_out.setIcon(icons.icon("zoom-out"))
         zoom_out.setToolTip("Zoom out")
         zoom_out.clicked.connect(lambda: self._set_zoom(self.zoom / 1.2))
-        zoom_in = QToolButton(text="+")
+        zoom_in = QToolButton()
+        zoom_in.setIcon(icons.icon("zoom-in"))
         zoom_in.setToolTip("Zoom in")
         zoom_in.clicked.connect(lambda: self._set_zoom(self.zoom * 1.2))
         fit = QToolButton(text="Fit")
+        fit.setIcon(icons.icon("move-horizontal"))
         fit.setToolTip("Fit pages to the panel width")
         fit.clicked.connect(self.fit_width)
         self.highlighter = QToolButton(text="Mark", checkable=True)
@@ -197,12 +203,14 @@ class PdfViewer(QWidget):
         self.highlighter.setMenu(colors)
         self.highlighter.setIcon(self._swatch(self.highlight_color))
         self.highlighter.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.snipper = QToolButton(text="✂ Snip", checkable=True)
+        self.snipper = QToolButton(text="Snip", checkable=True)
+        self.snipper.setIcon(icons.icon("scissors"))
         self.snipper.setToolTip(
             "Snip: drag a box around a chart, table or diagram to put it into your notes.\n"
             "Text and tables inside it go along, so Claude can read them in the export."
         )
-        self.eraser = QToolButton(text="⌫ Unmark", checkable=True)
+        self.eraser = QToolButton(text="Unmark", checkable=True)
+        self.eraser.setIcon(icons.icon("eraser"))
         self.eraser.setToolTip("Unmark: click a highlight to remove it, or drag a box to remove every highlight it touches.")
         tools = (self.snipper, self.highlighter, self.eraser)  # at most one is on
         for tool in tools:
@@ -214,8 +222,10 @@ class PdfViewer(QWidget):
             )
 
         # Full and short labels: the short ones keep every tool reachable in a narrow panel.
-        self._labels = ((self.snipper, "✂ Snip", "✂"), (self.highlighter, "Mark", ""), (self.eraser, "⌫ Unmark", "⌫"), (fit, "Fit", "↔"))
+        self._labels = ((self.snipper, "Snip", ""), (self.highlighter, "Mark", ""), (self.eraser, "Unmark", ""), (fit, "Fit", ""))
         self._compact = False
+        for button in (self.snipper, self.eraser, fit):
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
         nav = QHBoxLayout()
         nav.setSpacing(2)
@@ -268,9 +278,10 @@ class PdfViewer(QWidget):
         self._compact = compact
         for button, full, short in self._labels:
             button.setText(short if compact else full)
-        self.highlighter.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonIconOnly if compact else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
+            if compact and not short:
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            else:
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -709,13 +720,16 @@ class PdfViewer(QWidget):
                 lambda: (self.clear_selection(), self.remove_highlights(index, selected)),
             )
         menu.addSeparator()
-        snip = menu.addAction("✂ Add selected area to notes", self.clip_selection)
+        snip = menu.addAction("Add selected area to notes")
+        snip.triggered.connect(self.clip_selection)
+        snip.setIcon(icons.icon("scissors"))
         snip.setEnabled(index == self._sel_page and self._sel_area is not None)
-        menu.addAction("✂ Add whole page to notes", lambda: self.clip_selection(index, self.doc[index].rect))
-        menu.addAction(
-            "→ Link this page in notes",
-            lambda: self.linkRequested.emit({"pdf": self.path.name, "page": index + 1}),
-        )
+        whole = menu.addAction("Add whole page to notes")
+        whole.triggered.connect(lambda: self.clip_selection(index, self.doc[index].rect))
+        whole.setIcon(icons.icon("scissors"))
+        link = menu.addAction("→ Link this page in notes")
+        link.triggered.connect(lambda: self.linkRequested.emit({"pdf": self.path.name, "page": index + 1}))
+        link.setIcon(icons.icon("link"))
         menu.addSeparator()
         page_text = self.doc[index].get_text("text").strip()
         slide_copy = menu.addAction("Copy page text", lambda: QApplication.clipboard().setText(page_text))

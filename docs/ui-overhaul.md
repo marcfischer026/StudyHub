@@ -107,6 +107,12 @@ Compact chrome, comfortable content:
   importance markers in the transcript become icons with tooltips.
 - Toolbar buttons: icon + short label for the primary actions (Record, Export), icon
   only with tooltip for the rest.
+- Done in step 5. Content glyphs stay: `[▶ 00:12:31]` stamps, `→` slide links, `★` ratings
+  and the Claude export markers, `✓`/`✗` in status text.
+- Transcript lines carry one icon each (exam star, question, answer, private) instead of
+  emoji prefixes; lecturer lines have no speaker prefix, other voices are named.
+- Microphone check: a coloured status dot (`icons.dot`) instead of coloured emoji circles.
+- Note toolbar: icons only for lists, to-do, slide link and timestamp; B / I / H1–H3 as text.
 
 ## Motion
 

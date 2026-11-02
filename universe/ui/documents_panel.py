@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from ..services.pdf_tools import needs_password, unlock
 from ..storage import DOC_TYPES, TAG_PALETTE, Document, Lecture, Subject, import_file
+from . import icons
 from .pdf_viewer import PdfViewer
 
 EMPTY_TEXT = "No documents yet.\n\nClick “Import PDF…” or drag a PDF file here."
@@ -174,7 +175,9 @@ class DocumentsPanel(QWidget):
         self.viewer = PdfViewer()
         import_btn = QPushButton("Import PDF…")
         import_btn.clicked.connect(self.import_pdf)
-        self.tags_btn = QToolButton(text="🏷 Tags")
+        self.tags_btn = QToolButton(text="Tags")
+        self.tags_btn.setIcon(icons.icon("tag"))
+        self.tags_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.tags_btn.setToolTip("Add or remove tags on the selected document (or right-click it)")
         self.tags_btn.clicked.connect(lambda: self._show_tag_menu(self.current_document(), self.tags_btn.mapToGlobal(self.tags_btn.rect().bottomLeft())))
 
