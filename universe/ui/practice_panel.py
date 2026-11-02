@@ -31,9 +31,10 @@ from ..services import practice
 from ..services.study_store import StudyStore
 from ..storage import Lecture, Subject
 from .claude_panel import ScopedPanel, WrapButton, button_row, exam_date, same_subject, scrolling, text_label
+from .style import DANGER, SUCCESS
 
-RIGHT = "#1a7f37"
-WRONG = "#cf222e"
+RIGHT = SUCCESS
+WRONG = DANGER
 MODES = (("Today", "today"), ("Weak topics", "weak"), ("Topic…", "topic"), ("Lecture…", "lecture"))
 FREE_TYPES = ("short", "case", "card")
 PARTLY = 0.6  # a pass, rated Hard

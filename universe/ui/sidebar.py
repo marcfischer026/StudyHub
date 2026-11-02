@@ -23,9 +23,11 @@ from PySide6.QtWidgets import (
 
 from ..storage import Lecture, Subject, Workspace
 from .audio import recordings_from_mime
+from .style import ACCENT
 
 ROLE = Qt.ItemDataRole.UserRole
-DROP_BG = QColor(47, 111, 237, 60)  # translucent accent: works in light and dark mode
+DROP_BG = QColor(ACCENT)
+DROP_BG.setAlpha(60)  # translucent accent: works in light and dark mode
 
 
 class _LectureTree(QTreeWidget):

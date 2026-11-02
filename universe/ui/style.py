@@ -1,101 +1,187 @@
-"""App-wide stylesheet. Colours come from the system palette (``palette(...)``)
-where possible so light and dark mode both work; only accents are fixed."""
+"""App-wide design tokens and stylesheet.
+
+Every colour, radius and spacing value the UI uses lives here (see
+``docs/ui-overhaul.md``). Neutrals come from the system palette so light and
+dark mode follow macOS; only the accent and the state colours are fixed.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtGui import QGuiApplication, QPalette
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication
 
-ACCENT = "#2f6fed"
-RECORD = "#e5484d"
-WARNING = "#c27c0e"
+# Muted blue, hue ~210°: calm enough for hours of reading, kept off the stock
+# macOS blue and out of the indigo/violet band. Contrast ≥ 5:1 in both themes.
+ACCENT_LIGHT = "#2F6497"
+ACCENT_DARK = "#6FA0D0"  # text and icons on dark backgrounds
+ACCENT_FILL_DARK = "#3A72A8"  # filled controls in dark mode, white text on top
+
+# State colours: the only saturated colours in the app, so they stand out.
+RECORD = "#E5484D"
+WARNING = "#C27C0E"
+SUCCESS = "#1A7F37"
+DANGER = "#CF222E"
+NEUTRAL = "#8A8F98"  # "not started yet", e.g. unseen topics
+
+# Back-compat for modules that still import the old names.
+ACCENT = ACCENT_LIGHT
+
+SPACE = (4, 8, 12, 16, 24)  # the only spacing values; index with SPACE[n]
+RADIUS_S, RADIUS_M, RADIUS_L = 4, 6, 10  # controls / cards and inputs / popovers
+
+
+@dataclass(frozen=True)
+class Tokens:
+    dark: bool
+    accent: str  # text, icons, focus
+    accent_fill: str  # filled buttons and selection, white text on top
+    accent_hover: str
+    text: str
+    muted: str
+    card: str
+    border: str
+    hover: str
+    mono: str  # font family for times and timestamps
+
+    def accent_tint(self, alpha: int) -> QColor:
+        """Translucent accent for backgrounds (drop targets, highlighted lines)."""
+        colour = QColor(self.accent_fill)
+        colour.setAlpha(alpha)
+        return colour
+
+
+SF_MONO = Path("/System/Library/Fonts/SFNSMono.ttf")  # ships with macOS but Qt doesn't list it
+
+
+@lru_cache(maxsize=1)
+def _mono_family() -> str:
+    """SF Mono on macOS (loaded from the system, not bundled); else the system monospace."""
+    if SF_MONO.exists():
+        families = QFontDatabase.applicationFontFamilies(QFontDatabase.addApplicationFont(str(SF_MONO)))
+        if families:
+            return families[0]
+    return QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family()
 
 
 def _is_dark() -> bool:
     return QGuiApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
 
-def stylesheet() -> str:
-    dark = _is_dark()
-    card = "rgba(255,255,255,0.05)" if dark else "rgba(0,0,0,0.035)"
-    border = "rgba(255,255,255,0.12)" if dark else "rgba(0,0,0,0.12)"
-    muted = "rgba(255,255,255,0.55)" if dark else "rgba(0,0,0,0.5)"
-    hover = "rgba(255,255,255,0.08)" if dark else "rgba(0,0,0,0.06)"
+def tokens(dark: bool | None = None) -> Tokens:
+    """Tokens for the current system appearance (or the one asked for)."""
+    dark = _is_dark() if dark is None else dark
+    mono = _mono_family()
+    if dark:
+        return Tokens(
+            dark=True,
+            accent=ACCENT_DARK,
+            accent_fill=ACCENT_FILL_DARK,
+            accent_hover="#346A9E",
+            text="rgba(255,255,255,0.88)",
+            muted="rgba(255,255,255,0.55)",
+            card="rgba(255,255,255,0.05)",
+            border="rgba(255,255,255,0.12)",
+            hover="rgba(255,255,255,0.08)",
+            mono=mono,
+        )
+    return Tokens(
+        dark=False,
+        accent=ACCENT_LIGHT,
+        accent_fill=ACCENT_LIGHT,
+        accent_hover="#3A72A8",
+        text="rgba(0,0,0,0.85)",
+        muted="rgba(0,0,0,0.5)",
+        card="rgba(0,0,0,0.035)",
+        border="rgba(0,0,0,0.12)",
+        hover="rgba(0,0,0,0.06)",
+        mono=mono,
+    )
+
+
+def stylesheet(t: Tokens | None = None) -> str:
+    t = t or tokens()
+    s, m, l = RADIUS_S, RADIUS_M, RADIUS_L
     return f"""
-    QMainWindow::separator {{ width: 1px; height: 1px; background: {border}; }}
+    QMainWindow::separator {{ width: 1px; height: 1px; background: {t.border}; }}
+    QWidget[glassRole="sidebar"], QWidget[glassRole="toolbar"],
+    QWidget[glassRole="header"], QWidget[glassRole="status"] {{ background: transparent; }}
 
     QToolBar#mainToolbar {{
-        spacing: 8px; padding: 6px 10px; border: none;
-        border-bottom: 1px solid {border};
+        spacing: 8px; padding: 4px 12px; border: none;
+        border-bottom: 1px solid {t.border};
     }}
     QToolBar#mainToolbar::handle {{ image: none; width: 0px; }}
-    QToolBar#formatBar {{ spacing: 2px; border: none; padding: 2px 0; }}
-    QToolBar#formatBar QToolButton {{ padding: 3px 7px; border-radius: 5px; }}
-    QToolBar#formatBar QToolButton:hover {{ background: {hover}; }}
-    QToolBar#formatBar QToolButton:checked {{ background: {ACCENT}; color: white; }}
+    QToolBar#formatBar {{ spacing: 4px; border: none; padding: 4px 0; }}
+    QToolBar#formatBar QToolButton {{ padding: 4px 8px; border-radius: {s}px; }}
+    QToolBar#formatBar QToolButton:hover {{ background: {t.hover}; }}
+    QToolBar#formatBar QToolButton:checked {{ background: {t.accent_fill}; color: white; }}
 
     QDockWidget {{ font-weight: 600; }}
-    QDockWidget::title {{ padding: 6px 8px; text-align: left; }}
+    QDockWidget::title {{ padding: 8px; text-align: left; }}
     QDockWidget > QWidget {{ font-weight: normal; }}
-    QTabBar::tab {{ padding: 5px 12px; }}
+    QTabBar::tab {{ padding: 4px 12px; }}
 
     QPushButton#recordButton {{
-        background: {RECORD}; color: white; border: none; border-radius: 15px;
-        padding: 6px 18px; font-weight: 700; min-height: 18px;
+        background: {RECORD}; color: white; border: none; border-radius: 13px;
+        padding: 4px 16px; font-weight: 700; min-height: 18px;
     }}
-    QPushButton#recordButton:hover {{ background: #f05a5f; }}
-    QPushButton#recordButton[recording="true"] {{ background: #8f1d21; }}
-    QPushButton#recordButton:disabled {{ background: {border}; color: {muted}; }}
+    QPushButton#recordButton:hover {{ background: #F05A5F; }}
+    QPushButton#recordButton[recording="true"] {{ background: #8F1D21; }}
+    QPushButton#recordButton:disabled {{ background: {t.border}; color: {t.muted}; }}
     QPushButton#primaryButton {{
-        background: {ACCENT}; color: white; border: none; border-radius: 7px;
-        padding: 6px 16px; font-weight: 600; min-height: 18px;
+        background: {t.accent_fill}; color: white; border: none; border-radius: {m}px;
+        padding: 4px 16px; font-weight: 600; min-height: 18px;
     }}
-    QPushButton#primaryButton:hover {{ background: #4a83f0; }}
-    QPushButton#primaryButton:disabled {{ background: {border}; color: {muted}; }}
+    QPushButton#primaryButton:hover {{ background: {t.accent_hover}; }}
+    QPushButton#primaryButton:disabled {{ background: {t.border}; color: {t.muted}; }}
     QPushButton#warningButton {{
         background: transparent; color: {WARNING}; border: 1px solid {WARNING};
-        border-radius: 12px; padding: 3px 10px; font-weight: 600;
+        border-radius: {m}px; padding: 4px 12px; font-weight: 600;
     }}
-    QLabel#recordTime {{ font-family: Menlo; font-size: 14px; font-weight: 600; color: {RECORD}; }}
-    QProgressBar#levelMeter {{ border: none; border-radius: 4px; background: {border}; }}
-    QProgressBar#levelMeter::chunk {{ border-radius: 4px; background: #30a46c; }}
-    QToolButton#panelsButton {{ padding: 4px 10px; border: 1px solid {border}; border-radius: 6px; }}
+    QLabel#recordTime {{ font-family: "{t.mono}"; font-size: 14px; font-weight: 600; color: {RECORD}; }}
+    QProgressBar#levelMeter {{ border: none; border-radius: {s}px; background: {t.border}; }}
+    QProgressBar#levelMeter::chunk {{ border-radius: {s}px; background: #30A46C; }}
+    QToolButton#panelsButton {{ padding: 4px 12px; border: 1px solid {t.border}; border-radius: {m}px; }}
     QToolButton#panelsButton::menu-indicator {{ image: none; width: 0px; }}
     QToolButton#micButton {{ font-size: 15px; padding: 2px 4px; }}
-    QLabel#breadcrumb {{ font-weight: 600; padding: 0 6px; }}
+    QLabel#breadcrumb {{ font-weight: 600; padding: 0 8px; }}
 
-    QLabel#muted {{ color: {muted}; }}
+    QLabel#muted {{ color: {t.muted}; }}
     QLabel#welcomeTitle {{ font-size: 28px; font-weight: 700; }}
-    QLabel#welcomeSubtitle {{ font-size: 14px; color: {muted}; }}
+    QLabel#welcomeSubtitle {{ font-size: 14px; color: {t.muted}; }}
     QLabel#lectureTitle {{ font-size: 20px; font-weight: 700; }}
-    QFrame#card {{ background: {card}; border: 1px solid {border}; border-radius: 10px; padding: 6px; }}
+    QFrame#card {{ background: {t.card}; border: 1px solid {t.border}; border-radius: {m}px; padding: 8px; }}
     QLabel#cardTitle {{ font-weight: 700; font-size: 13px; }}
 
     QListWidget#lectureList {{ border: none; background: transparent; }}
     QListWidget#lectureList::item {{
-        background: {card}; border: 1px solid {border}; border-radius: 8px;
-        padding: 10px 12px; margin: 3px 0;
+        background: {t.card}; border: 1px solid {t.border}; border-radius: {m}px;
+        padding: 8px 12px; margin: 4px 0;
     }}
-    QListWidget#lectureList::item:hover {{ border-color: {ACCENT}; }}
+    QListWidget#lectureList::item:hover {{ border-color: {t.accent}; }}
 
     QTreeWidget#subjectTree {{ border: none; background: transparent; }}
-    QTreeWidget#subjectTree::item {{ padding: 5px 4px; border-radius: 6px; }}
-    QTreeWidget#subjectTree::item:hover {{ background: {hover}; }}
-    QTreeWidget#subjectTree::item:selected {{ background: {ACCENT}; color: white; }}
+    QTreeWidget#subjectTree::item {{ padding: 4px; border-radius: {s}px; }}
+    QTreeWidget#subjectTree::item:hover {{ background: {t.hover}; }}
+    QTreeWidget#subjectTree::item:selected {{ background: {t.accent_fill}; color: white; }}
 
-    QTextEdit#notesEdit {{ border: none; font-size: 14px; }}
-    QToolButton#activityLabel {{ border: none; padding: 1px 4px; }}
-    QToolButton#activityLabel:hover {{ background: {hover}; border-radius: 5px; }}
+    QTextEdit#notesEdit {{ border: none; font-size: 15px; }}
+    QToolButton#activityLabel {{ border: none; padding: 0 4px; }}
+    QToolButton#activityLabel:hover {{ background: {t.hover}; border-radius: {s}px; }}
     QToolButton#activityPause {{ border: none; padding: 0 4px; }}
-    QProgressBar#activityBar {{ border: none; border-radius: 3px; background: {border}; }}
-    QProgressBar#activityBar::chunk {{ border-radius: 3px; background: {ACCENT}; }}
-    QFrame#activityPopup {{ background: palette(window); border: 1px solid {border}; border-radius: 10px; }}
-    QFrame#rule {{ color: {border}; }}
-    QListWidget#documentList::item {{ border-radius: 6px; }}
-    QListWidget#documentList::item:hover {{ background: {hover}; }}
-    QListWidget#documentList::item:selected {{ background: {hover}; border: 1px solid {ACCENT}; }}
-    QLabel#slidePage {{ background: white; border: 1px solid {border}; }}
-    QWidget#playerBar {{ border-top: 1px solid {border}; }}
+    QProgressBar#activityBar {{ border: none; border-radius: {s}px; background: {t.border}; }}
+    QProgressBar#activityBar::chunk {{ border-radius: {s}px; background: {t.accent_fill}; }}
+    QFrame#activityPopup {{ background: palette(window); border: 1px solid {t.border}; border-radius: {l}px; }}
+    QFrame#rule {{ color: {t.border}; }}
+    QListWidget#documentList::item {{ border-radius: {s}px; }}
+    QListWidget#documentList::item:hover {{ background: {t.hover}; }}
+    QListWidget#documentList::item:selected {{ background: {t.hover}; border: 1px solid {t.accent}; }}
+    QLabel#slidePage {{ background: white; border: 1px solid {t.border}; }}
+    QWidget#playerBar {{ border-top: 1px solid {t.border}; }}
     QToolButton#playButton {{ font-size: 14px; min-width: 26px; }}
     """
 

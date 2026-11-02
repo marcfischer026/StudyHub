@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .style import ACCENT
+
 PAGE_GAP = 12
 KEEP_RENDERED = 6  # pages beyond this distance from the viewport drop their pixmap
 WORD_SLACK = 3  # points: a press this close to a word starts a text selection, not an area
@@ -42,7 +44,8 @@ HIGHLIGHT_COLORS = {  # name -> RGB 0..1, as PDF annotations store them
     "Blue": (0.53, 0.81, 0.98),
     "Pink": (1.0, 0.6, 0.8),
 }
-SELECTION_COLOR = QColor(0, 122, 255, 70)
+SELECTION_COLOR = QColor(ACCENT)
+SELECTION_COLOR.setAlpha(70)
 AREA_OPACITY = 0.35
 MARK_TYPES = [pymupdf.PDF_ANNOT_HIGHLIGHT, pymupdf.PDF_ANNOT_SQUARE]  # what "Remove highlight" removes
 FIGURE_WIDTH = 1600  # pixels a clipped figure is rendered at (sharp on Retina and for Claude)

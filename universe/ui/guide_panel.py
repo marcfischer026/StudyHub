@@ -21,10 +21,11 @@ from ..services.study_store import Knowledge, StudyStore
 from ..services.subject_model import SubjectView, load_subject
 from ..storage import Lecture, Subject
 from .claude_panel import ScopedPanel, exam_date
+from .style import DANGER, NEUTRAL, SUCCESS, WARNING
 
 ROLE = Qt.ItemDataRole.UserRole
 MAX_LIST_HEIGHT = 190
-UNSEEN, WEAK, FAIR, STRONG = "#8a8f98", "#cf222e", "#c27c0e", "#1a7f37"
+UNSEEN, WEAK, FAIR, STRONG = NEUTRAL, DANGER, WARNING, SUCCESS
 _BRACKETS = re.compile(r"\[([^\[\]\n]+)\]")
 _BODY = re.compile(r"<body[^>]*>(.*)</body>", re.DOTALL)
 _LABEL_ORDER = re.compile(r"(\d+)\.p(\d+)")

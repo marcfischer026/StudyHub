@@ -32,6 +32,7 @@ from ..config import Settings
 from ..services import lmstudio, local_llm
 from ..services.jobcontrol import JobControl
 from ..services.system_monitor import Snapshot, SystemMonitor
+from .style import WARNING
 from .workers import Worker
 
 AUTO_REASONS = ("battery", "unplugged")
@@ -565,7 +566,7 @@ class ActivityPopup(QFrame):
             elif inst.instance_id in keeper.used and self.settings.local_llm_unload_after:
                 stay = "UniVerse unloads it when idle"
             else:
-                stay = "<span style='color:#c27c0e'>stays loaded (no timer)</span>"
+                stay = f"<span style='color:{WARNING}'>stays loaded (no timer)</span>"
             label = QLabel(f"<b>{inst.name}</b> · {inst.size_gb:.1f} GB{used}<br>{stay}", wordWrap=True)
             button = QPushButton("Unloading…" if inst.instance_id in keeper.busy_unloading else "Unload")
             button.setEnabled(inst.instance_id not in keeper.busy_unloading)

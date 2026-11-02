@@ -35,10 +35,12 @@ from ..services.audio_player import duration
 from ..services.timestamps import format_seconds
 from ..services.transcriber import Transcript
 from ..storage import Lecture, clock_time, pauses, read_timeline, recording_time
+from .style import ACCENT
 
 ROLE = Qt.ItemDataRole.UserRole
 EXAM_BG = QColor(255, 196, 0, 70)  # translucent so it works in light and dark mode
-QUESTION_BG = QColor(47, 111, 237, 35)
+QUESTION_BG = QColor(ACCENT)
+QUESTION_BG.setAlpha(35)
 ICONS = {"question": "❓ ", "answer": "💬 ", "off_topic": "🔇 "}
 SOURCE_NAMES = {"rules": "exam cue", "local": "local AI", "claude": "Claude", "manual": "you"}
 

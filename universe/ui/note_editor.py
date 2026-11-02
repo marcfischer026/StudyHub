@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from ..services import slide_links, timestamps
 from ..storage import DOC_TYPES, Lecture
+from . import style
 
 
 class _StampHighlighter(QSyntaxHighlighter):
@@ -56,7 +57,7 @@ class _StampHighlighter(QSyntaxHighlighter):
         super().__init__(document)
         self.pattern = QRegularExpression(timestamps.TIMESTAMP_RE.pattern)
         self.fmt = QTextCharFormat()
-        self.fmt.setForeground(QColor("#2f7de1"))
+        self.fmt.setForeground(QColor(style.tokens().accent))
         self.fmt.setFontWeight(QFont.Weight.DemiBold)
 
     def highlightBlock(self, text: str) -> None:

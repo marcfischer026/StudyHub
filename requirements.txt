@@ -3,6 +3,8 @@
 
 # UI
 PySide6>=6.7
+# Native macOS glass (sidebar/toolbar blur). Without it the chrome is solid.
+pyobjc-framework-Cocoa>=10.3; sys_platform == "darwin"
 
 # Slides / PDF rendering and text extraction
 PyMuPDF>=1.24
