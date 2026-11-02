@@ -1,8 +1,11 @@
 """macOS glass: a native NSVisualEffectView behind each glass widget.
 
-Qt draws the whole window into one view, so the effect views sit *behind* it
-(siblings of the content view, ordered below), sized to the widget's
-rectangle. Qt leaves those pixels transparent and the blur shows through.
+Qt draws the whole window into one view, so the effect views sit *behind* it,
+sized to the widget's rectangle; Qt leaves those pixels transparent and the
+blur shows through. They live inside the window's own background effect view
+(the frame view's first subview, below the content). Adding them to the frame
+view itself is unsupported: macOS then drops its title bar layout and squeezes
+the title under the window buttons.
 """
 
 from __future__ import annotations
@@ -13,9 +16,8 @@ from AppKit import (
     NSVisualEffectBlendingModeBehindWindow,
     NSVisualEffectStateFollowsWindowActiveState,
     NSVisualEffectView,
-    NSWindowBelow,
 )
-from PySide6.QtCore import QEvent, QObject, QPoint
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt
 from PySide6.QtWidgets import QWidget
 
 MATERIALS = {  # NSVisualEffectMaterial, as the system uses them in its own apps
@@ -24,6 +26,17 @@ MATERIALS = {  # NSVisualEffectMaterial, as the system uses them in its own apps
     "header": 10,  # .headerView
     "status": 3,  # .titlebar
 }
+
+class UniVerseGlassView(NSVisualEffectView):
+    """A blur view that never takes the mouse.
+
+    It sits at the window's edges; if it answered hit tests, the window frame would
+    not get the clicks it needs for resizing (e.g. dragging the top-left corner).
+    """
+
+    def hitTest_(self, point):
+        return None
+
 
 _TRACKED = (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Hide, QEvent.Type.LayoutRequest)
 
@@ -54,21 +67,32 @@ class _Tracker(QObject):
         win_id = self.widget.window().internalWinId()  # 0 until the window is created
         return objc.objc_object(c_void_p=int(win_id)) if win_id else None
 
+    def _host(self, content):
+        """The window's own background effect view: behind the content, covering the window."""
+        frame = content.superview()
+        below = list(frame.subviews())[: list(frame.subviews()).index(content)]
+        return next((v for v in below if v.isKindOfClass_(NSVisualEffectView)), None)
+
     def sync(self) -> None:
         content = self._content_view()
         if content is None or content.superview() is None:
             return  # window not shown yet; the Show event syncs again
         if self.view is None:
-            self.view = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, 0))
+            host = self._host(content)
+            if host is None:  # an older macOS without one: solid, never a see-through hole
+                self.widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+                self.widget.setAutoFillBackground(True)
+                return
+            self.view = UniVerseGlassView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, 0))
             self.view.setMaterial_(self.material)
             self.view.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
             self.view.setState_(NSVisualEffectStateFollowsWindowActiveState)
-            content.superview().addSubview_positioned_relativeTo_(self.view, NSWindowBelow, content)
+            host.addSubview_(self.view)
         top = self.widget.window()
         origin = self.widget.mapTo(top, QPoint(0, 0))
         rect = NSMakeRect(origin.x(), origin.y(), self.widget.width(), self.widget.height())
-        # Qt's content view is flipped (y down); its superview is not.
-        self.view.setFrame_(content.convertRect_toView_(rect, content.superview()))
+        # Qt's content view is flipped (y down); the host is not.
+        self.view.setFrame_(content.convertRect_toView_(rect, self.view.superview()))
         self.view.setHidden_(not self.widget.isVisible())
 
     def _remove(self, *_) -> None:

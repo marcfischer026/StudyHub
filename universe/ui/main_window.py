@@ -78,7 +78,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("UniVerse")
         self.resize(1440, 900)
-        self.setUnifiedTitleAndToolBarOnMac(True)
+        # Not unified with the title bar: with the see-through (glass) window, macOS then squeezes
+        # the title under the window buttons. A plain title bar above the glass toolbar reads cleanly.
+        self.setUnifiedTitleAndToolBarOnMac(False)
         glass.prepare_window(self)  # before the window exists natively
 
         self.jobs = JobManager(self)  # transcription + local AI, one at a time, pausable
