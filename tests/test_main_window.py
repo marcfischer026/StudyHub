@@ -121,5 +121,75 @@ class NarrowWindowTests(unittest.TestCase):
 
         self.assertEqual(self.make_window().findChildren(QDockWidget), [])
 
+
+class ModeTests(unittest.TestCase):
+    """Lecture · Read · Review · Exam: presets that remember your changes."""
+
+    def setUp(self):
+        self.window = MainWindow(Settings())
+        self.addCleanup(self.window.deleteLater)
+        lecture = self.window.workspace.create_subject(self.id().rsplit(".", 1)[-1]).create_lecture("Week 1")
+        self.window.sidebar.refresh(select=lecture)
+        self.window.resize(1600, 900)
+        self.window.show()
+        self.addCleanup(self.window.hide)
+        app.processEvents()
+        self.bench = self.window.workbench
+
+    def shown(self) -> set[str]:
+        return {part for part in ("sidebar", "notes", "documents", "inspector") if self.bench.is_shown(part)}
+
+    def test_cmd_1_to_4_switch_modes(self):
+        keys = [a.shortcut().toString() for a in self.window.mode_actions.values()]
+        self.assertEqual(keys, ["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4"])
+        self.assertEqual(self.bench.mode, "lecture")
+        self.window.mode_actions["read"].trigger()
+        self.assertEqual(self.bench.mode, "read")
+        self.assertEqual(self.shown(), {"notes", "documents"})
+        self.window.mode_actions["lecture"].trigger()
+        self.assertEqual(self.shown(), {"sidebar", "notes", "documents", "inspector"})
+
+    def test_a_mode_keeps_your_changes_until_reset(self):
+        self.window.part_actions["sidebar"].setChecked(False)
+        self.window.mode_actions["review"].trigger()
+        self.assertIn("sidebar", self.shown())  # Review starts from its own preset
+        self.window.mode_actions["lecture"].trigger()
+        self.assertNotIn("sidebar", self.shown())  # your Lecture, as you left it
+        self.window._reset_mode()
+        self.assertIn("sidebar", self.shown())
+        self.assertTrue(self.window.part_actions["sidebar"].isChecked())
+
+    def test_exam_opens_practice(self):
+        self.window.mode_actions["exam"].trigger()
+        self.assertEqual(self.bench.inspector.current(), "ai")
+        self.assertIs(self.window.ai.tabs.currentWidget(), self.window.ai.practice)
+        self.assertNotIn("documents", self.shown())
+
+    def test_switching_modes_does_not_report_parts_as_closed(self):
+        self.window._ready = True
+        self.window.statusBar().clearMessage()
+        self.window.mode_actions["read"].trigger()
+        self.assertNotIn("hidden", self.window.statusBar().currentMessage())
+
+    def test_modes_and_options_survive_a_restart(self):
+        self.window.mode_actions["review"].trigger()
+        self.window.stacked_action.setChecked(True)
+        self.window.inspector_left_action.setChecked(True)
+        self.assertLess(self.bench.indexOf(self.bench.inspector), self.bench.indexOf(self.bench.center))
+        self.window.settings.layout = self.bench.state()
+        other = MainWindow(self.window.settings)
+        self.addCleanup(other.deleteLater)
+        self.assertEqual(other.workbench.mode, "review")
+        self.assertTrue(other.mode_actions["review"].isChecked())
+        self.assertTrue(other.workbench.stacked() and other.stacked_action.isChecked())
+        self.assertTrue(other.workbench.inspector_left() and other.inspector_left_action.isChecked())
+
+    def test_layout_saved_before_modes_becomes_lecture(self):
+        old = {"main": "", "center": "", "shown": {"sidebar": False}, "pane": "recordings"}
+        self.bench.restore(old)
+        self.assertEqual(self.bench.mode, "lecture")
+        self.assertNotIn("sidebar", self.shown())
+        self.assertEqual(self.bench.inspector.current(), "recordings")
+
 if __name__ == "__main__":
     unittest.main()

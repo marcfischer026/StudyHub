@@ -34,8 +34,9 @@ Three columns in a `QSplitter` (`universe/ui/workbench.py`) replace the floating
   there is room. The part you asked for last (e.g. AI Tutor via Export) always gets its
   place. Parts you hid yourself stay hidden.
 - **Customisation, kept low-key:** divider positions, hidden parts and the inspector pane
-  are remembered (`settings.layout`). Right-click options ("Open in center", "Move
-  inspector to left") come with the modes in step 4. No free docking, no floating windows.
+  are remembered per mode (`settings.layout`). Two options in View: "Inspector on the Left"
+  (also on right-click of the inspector header) and "Slides Below Notes". No free docking,
+  no floating windows.
 
 ## Workspace modes
 
@@ -44,12 +45,13 @@ own splitter sizes and inspector tab.
 
 | Mode | Center | Inspector | Sidebar |
 |---|---|---|---|
-| Lecture | Notes + slides | Transcript (live) | Shown |
-| Read | Slides large, notes narrow | Hidden | Collapsed |
-| Review | Notes | Transcript + player | Shown |
-| Exam | Notes | Practice / Claude | Shown |
+| Lecture (⌘1) | Notes + slides 3:2 | Transcript | Shown |
+| Read (⌘2) | Notes + slides 1:2 | Hidden | Hidden |
+| Review (⌘3) | Notes | Transcript, wider (480) | Shown |
+| Exam (⌘4) | Notes | AI Tutor on Practice, wider (520) | Shown |
 
-"Reset mode" puts back the preset. The Panels menu and ⌘0–⌘5 dock shortcuts are gone since step 2; showing and hiding
+The switcher sits in the toolbar (icons only below 1200 px window width, where Timestamp
+and Import reply also drop their labels) and in View. "Reset This Mode" puts back the preset; "Reset All Modes" starts over. The Panels menu and ⌘0–⌘5 dock shortcuts are gone since step 2; showing and hiding
 parts lives in View, with the ⌥⌘ shortcuts above.
 
 ## Glass

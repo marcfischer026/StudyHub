@@ -1,14 +1,16 @@
 """The window's three columns: sidebar, centre (notes beside slides), inspector.
 
 Replaces the old floating docks. Each part can be shown or hidden and the
-dividers dragged; :meth:`Workbench.state` and :meth:`Workbench.restore` keep
-that between launches. No free docking, no floating windows (see
-``docs/ui-overhaul.md``).
+dividers dragged. Workspace modes (Lecture, Read, Review, Exam) are presets for
+what you are doing; each remembers your own changes until you reset it.
+:meth:`Workbench.state` and :meth:`Workbench.restore` keep all of it between
+launches. No free docking, no floating windows (see ``docs/ui-overhaul.md``).
 """
 
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 
 from PySide6.QtCore import QByteArray, QSize, Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget
@@ -16,7 +18,27 @@ from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QSplitter, QStackedWidg
 from . import icons, style
 
 PARTS = ("sidebar", "notes", "documents", "inspector")
-DEFAULT_SIZES = {"main": [240, 820, 380], "center": [480, 340]}
+STEP_ASIDE = ("inspector", "sidebar", "documents", "notes")  # first steps aside first in a narrow window
+SIDEBAR_WIDTH = 240
+
+
+@dataclass(frozen=True)
+class Mode:
+    title: str
+    icon: str
+    hint: str
+    hidden: tuple[str, ...]  # parts this mode starts without
+    center: tuple[int, int]  # notes : slides
+    inspector_width: int
+    pane: str  # inspector pane in front
+
+
+MODES = {
+    "lecture": Mode("Lecture", "notebook-pen", "Notes beside the slides, live transcript", (), (3, 2), 380, "transcript"),
+    "read": Mode("Read", "book-open", "Slides large, notes narrow, nothing else", ("sidebar", "inspector"), (1, 2), 380, "transcript"),
+    "review": Mode("Review", "history", "Notes with transcript and playback", ("documents",), (1, 0), 480, "transcript"),
+    "exam": Mode("Exam", "clipboard-check", "Practice and Claude beside your notes", ("documents",), (1, 0), 520, "ai"),
+}
 ICONS_ONLY_BELOW = 300  # inspector width at which segment labels give way to icons
 
 
@@ -83,6 +105,7 @@ class Workbench(QSplitter):
     """
 
     visibilityChanged = Signal(str, bool)  # part, now on screen
+    modeChanged = Signal(str, bool)  # mode, started from its preset
 
     def __init__(self, sidebar: QWidget, notes: QWidget, documents: QWidget, parent=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
@@ -95,12 +118,13 @@ class Workbench(QSplitter):
         self.center.addWidget(documents)
         self.parts = {"sidebar": sidebar, "notes": notes, "documents": documents, "inspector": self.inspector}
         self.wanted = dict.fromkeys(PARTS, True)
-        self.priority = ["inspector", "sidebar", "documents", "notes"]  # first steps aside first
+        self.priority = list(STEP_ASIDE)
+        self.mode = "lecture"
+        self.saved: dict[str, dict] = {}  # mode -> your changes to it (see _snapshot)
         for widget in (sidebar, self.center, self.inspector):
             self.addWidget(widget)
         for splitter in (self, self.center):
             splitter.setChildrenCollapsible(False)  # hiding is explicit, via View or the toolbar
-        self.setStretchFactor(1, 1)
         self.center.setStretchFactor(0, 3)
         self.center.setStretchFactor(1, 2)
         self.reset()
@@ -122,13 +146,70 @@ class Workbench(QSplitter):
         self.inspector.show_pane(key)
 
     def reset(self) -> None:
-        self.wanted = dict.fromkeys(PARTS, True)
-        self.priority = ["inspector", "sidebar", "documents", "notes"]
+        """Every mode back to its preset; Lecture in front."""
+        self.saved = {}
+        self.mode = "lecture"
+        self.set_inspector_left(False)
+        self.set_stacked(False)
+        self._apply_preset(self.mode)
+
+    # --- workspace modes ------------------------------------------------------
+
+    def set_mode(self, key: str) -> None:
+        if key == self.mode:
+            return
+        self.saved[self.mode] = self._snapshot()
+        self.mode = key
+        fresh = key not in self.saved
+        if fresh:
+            self._apply_preset(key)
+        else:
+            self._restore_snapshot(self.saved[key])
+        self.modeChanged.emit(key, fresh)
+
+    def reset_mode(self) -> None:
+        """Forget your changes to the current mode."""
+        self.saved.pop(self.mode, None)
+        self._apply_preset(self.mode)
+        self.modeChanged.emit(self.mode, True)
+
+    def _apply_preset(self, key: str) -> None:
+        mode = MODES[key]
+        self.wanted = {part: part not in mode.hidden for part in PARTS}
+        self.priority = list(STEP_ASIDE)
         self._fit()
-        self.setSizes(DEFAULT_SIZES["main"])
-        self.center.setSizes(DEFAULT_SIZES["center"])
-        if self.inspector.keys:
-            self.inspector.show_pane(self.inspector.keys[0])
+        total = self.width() if self.isVisible() else 1440
+        middle = max(total - SIDEBAR_WIDTH - mode.inspector_width, 400)
+        self._set_column_sizes(SIDEBAR_WIDTH, middle, mode.inspector_width)
+        notes, slides = mode.center
+        self.center.setSizes([middle * notes // (notes + slides) or 1, middle * slides // (notes + slides) or 1])
+        if mode.pane in self.inspector.keys:
+            self.inspector.show_pane(mode.pane)
+
+    def _set_column_sizes(self, sidebar: int, center: int, inspector: int) -> None:
+        width = {self.parts["sidebar"]: sidebar, self.center: center, self.inspector: inspector}
+        self.setSizes([width[self.widget(i)] for i in range(self.count())])
+
+    # --- the two low-key layout options -----------------------------------------
+
+    def inspector_left(self) -> bool:
+        return self.indexOf(self.inspector) < self.indexOf(self.center)
+
+    def set_inspector_left(self, left: bool) -> None:
+        """Inspector between sidebar and centre instead of on the right edge."""
+        if left != self.inspector_left():
+            sizes = dict(zip((self.widget(i) for i in range(self.count())), self.sizes()))
+            self.insertWidget(1 if left else 2, self.inspector)
+            self.setSizes([sizes[self.widget(i)] for i in range(self.count())])
+        for i in range(self.count()):  # only the centre grows with the window
+            self.setStretchFactor(i, int(self.widget(i) is self.center))
+
+    def stacked(self) -> bool:
+        return self.center.orientation() == Qt.Orientation.Vertical
+
+    def set_stacked(self, stacked: bool) -> None:
+        """Slides below the notes instead of beside them."""
+        self.center.setOrientation(Qt.Orientation.Vertical if stacked else Qt.Orientation.Horizontal)
 
     # --- fitting the window ---------------------------------------------------
 
@@ -164,7 +245,7 @@ class Workbench(QSplitter):
 
     # --- kept between launches ------------------------------------------------
 
-    def state(self) -> dict:
+    def _snapshot(self) -> dict:
         encode = lambda data: base64.b64encode(bytes(data)).decode()  # noqa: E731
         return {
             "main": encode(self.saveState()),
@@ -173,17 +254,37 @@ class Workbench(QSplitter):
             "pane": self.inspector.current(),
         }
 
-    def restore(self, state: dict) -> None:
+    def _restore_snapshot(self, snapshot: dict) -> None:
+        stacked = self.stacked()  # a global choice; restoreState would bring back the saved one
         try:
-            if state.get("main"):
-                self.restoreState(QByteArray(base64.b64decode(state["main"])))
-            if state.get("center"):
-                self.center.restoreState(QByteArray(base64.b64decode(state["center"])))
+            if snapshot.get("main"):
+                self.restoreState(QByteArray(base64.b64decode(snapshot["main"])))
+            if snapshot.get("center"):
+                self.center.restoreState(QByteArray(base64.b64decode(snapshot["center"])))
         except (ValueError, TypeError):
-            pass  # a broken saved layout falls back to the default sizes
-        for part, visible in state.get("shown", {}).items():
-            if part in self.wanted:
-                self.wanted[part] = bool(visible)
+            pass  # a broken saved layout keeps the current sizes
+        self.set_stacked(stacked)
+        self.wanted = {part: bool(snapshot.get("shown", {}).get(part, True)) for part in PARTS}
+        self.priority = list(STEP_ASIDE)
         self._fit()
-        if state.get("pane") in self.inspector.keys:
-            self.inspector.show_pane(state["pane"])
+        if snapshot.get("pane") in self.inspector.keys:
+            self.inspector.show_pane(snapshot["pane"])
+
+    def state(self) -> dict:
+        saved = dict(self.saved)
+        saved[self.mode] = self._snapshot()
+        return {"mode": self.mode, "modes": saved, "inspector_left": self.inspector_left(), "stacked": self.stacked()}
+
+    def restore(self, state: dict) -> None:
+        if "main" in state:  # saved before modes existed: that layout was Lecture
+            state = {"mode": "lecture", "modes": {"lecture": state}}
+        self.set_inspector_left(bool(state.get("inspector_left")))
+        stacked = bool(state.get("stacked"))
+        self.saved = {k: v for k, v in state.get("modes", {}).items() if k in MODES and isinstance(v, dict)}
+        self.mode = state.get("mode") if state.get("mode") in MODES else "lecture"
+        if self.mode in self.saved:
+            self._restore_snapshot(self.saved[self.mode])
+        else:
+            self._apply_preset(self.mode)
+        self.set_stacked(stacked)
+        self.modeChanged.emit(self.mode, False)

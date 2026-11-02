@@ -8,9 +8,10 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QFile, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QInputDialog,
     QMainWindow,
     QMessageBox,
@@ -29,7 +30,7 @@ from ..services.pdf_tools import guess_kind
 from ..services.subject_model import load_subject, locate
 from ..services.vector_index import SubjectIndex, get_embedder
 from ..storage import AUDIO_SUFFIXES, DOC_TYPES, Lecture, Subject, Workspace, clock_time
-from . import icons, workers
+from . import icons, style, workers
 from .ai_panel import AIPanel, hit_target
 from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, open_mic_privacy_settings
 from .claude_panel import study_pool
@@ -43,10 +44,11 @@ from .sidebar import Sidebar
 from .transcript_panel import TranscriptPanel
 from .jobs import ActivityIndicator, JobManager, poll_pool
 from .welcome import LectureView, WelcomePage
-from .workbench import Workbench
+from .workbench import MODES, Workbench
 from .workers import Worker
 
 DRAG_EVENTS = (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop)
+COMPACT_TOOLBAR_BELOW = 1200  # window width at which the mode switcher drops its labels
 # View menu: (part, title, shortcut). ⌥⌘ keeps ⌘1–⌘4 free for workspace modes.
 PART_ACTIONS = (
     ("sidebar", "Sidebar", "Ctrl+Alt+S"),
@@ -175,6 +177,10 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
+        bar.addWidget(self._build_mode_switcher())
+        gap = QWidget()
+        gap.setFixedWidth(style.SPACE[3])
+        bar.addWidget(gap)
 
         export = QPushButton(" Export for Claude", icon=icons.icon("upload", "white"))
         export.setObjectName("primaryButton")
@@ -184,10 +190,63 @@ class MainWindow(QMainWindow):
         import_btn.setToolTip("Bring Claude's reply back in")
         import_btn.clicked.connect(self._focus_import)
         self.lecture_buttons = (stamp,)
+        self._shrinking_labels = ((stamp, stamp.text()), (import_btn, import_btn.text()))  # icon only when narrow
         self.subject_buttons = (export, import_btn)  # work with no lecture open
         for button in self.subject_buttons:
             bar.addWidget(button)
         bar.addWidget(self._toggle_button("inspector", "panel-right", "Show or hide the inspector"))
+
+    def _build_mode_switcher(self) -> QWidget:
+        """Lecture · Read · Review · Exam, ⌘1–⌘4; also in the View menu."""
+        self.mode_group = QActionGroup(self, exclusive=True)
+        self.mode_actions: dict[str, QAction] = {}
+        self.mode_buttons: list[QToolButton] = []
+        switcher = QWidget(objectName="modeSwitcher")
+        row = QHBoxLayout(switcher)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(style.SPACE[0] // 2)
+        for number, (key, mode) in enumerate(MODES.items(), start=1):
+            action = QAction(mode.title, self.mode_group, checkable=True)
+            action.setShortcut(QKeySequence(f"Ctrl+{number}"))
+            action.setIcon(icons.icon(mode.icon, on_color=style.tokens().accent))
+            action.setIconVisibleInMenu(False)
+            shortcut = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+            action.setToolTip(f"{mode.title}: {mode.hint} ({shortcut})")
+            action.triggered.connect(lambda _=False, k=key: self._set_mode(k))
+            self.mode_actions[key] = action
+            button = QToolButton(objectName="segment")
+            button.setDefaultAction(action)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            row.addWidget(button)
+            self.mode_buttons.append(button)
+        self.mode_actions[self.workbench.mode].setChecked(True)
+        self.workbench.modeChanged.connect(self._on_mode_changed)
+        return switcher
+
+    def _set_mode(self, key: str) -> None:
+        ready, self._ready = self._ready, False  # parts a mode hides are not "closed by you"
+        self.workbench.set_mode(key)
+        self._ready = ready
+
+    def _on_mode_changed(self, key: str, fresh: bool) -> None:
+        self.mode_actions[key].setChecked(True)
+        if fresh and key == "exam":  # straight to practising; later visits keep the tab you left
+            self.ai.tabs.setCurrentWidget(self.ai.practice)
+
+    def _reset_mode(self) -> None:
+        ready, self._ready = self._ready, False
+        self.workbench.reset_mode()
+        self._ready = ready
+
+    def resizeEvent(self, event) -> None:
+        # Mode labels need room; at half a screen the icons (with tooltips) stay.
+        compact = event.size().width() < COMPACT_TOOLBAR_BELOW
+        mode = Qt.ToolButtonStyle.ToolButtonIconOnly if compact else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        for button in getattr(self, "mode_buttons", ()):
+            button.setToolButtonStyle(mode)
+        for button, label in getattr(self, "_shrinking_labels", ()):
+            button.setText("" if compact else label)
+        super().resizeEvent(event)
 
     def _toggle_button(self, part: str, icon: str, tip: str) -> QToolButton:
         button = QToolButton(objectName="chromeToggle")
@@ -224,6 +283,9 @@ class MainWindow(QMainWindow):
     def _default_layout(self) -> None:
         ready, self._ready = self._ready, False  # no "hidden" hints while rearranging
         self.workbench.reset()
+        self.mode_actions[self.workbench.mode].setChecked(True)
+        self.inspector_left_action.setChecked(False)
+        self.stacked_action.setChecked(False)
         self._ready = ready
 
     def _build_menus(self) -> None:
@@ -280,7 +342,22 @@ class MainWindow(QMainWindow):
         for key in self.workbench.inspector.keys:
             add(view, f"Show {self.workbench.inspector.titles[key]}", lambda _=False, k=key: self.workbench.show_pane(k))
         view.addSeparator()
-        add(view, "Reset Layout", self._default_layout)
+        for action in self.mode_actions.values():
+            view.addAction(action)
+        add(view, "Reset This Mode", self._reset_mode)
+        view.addSeparator()
+        self.inspector_left_action = QAction("Inspector on the Left", self, checkable=True)
+        self.inspector_left_action.toggled.connect(self.workbench.set_inspector_left)
+        self.stacked_action = QAction("Slides Below Notes", self, checkable=True)
+        self.stacked_action.toggled.connect(self.workbench.set_stacked)
+        view.addAction(self.inspector_left_action)
+        view.addAction(self.stacked_action)
+        # The same choice, where you'd look for it: right-click the inspector's header.
+        header = self.workbench.inspector.header
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        header.addAction(self.inspector_left_action)
+        view.addSeparator()
+        add(view, "Reset All Modes", self._default_layout)
 
     def _connect(self) -> None:
         self.sidebar.lectureSelected.connect(self.open_lecture)
@@ -1027,6 +1104,8 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(QByteArray(base64.b64decode(self.settings.window_geometry)))
         if self.settings.layout:
             self.workbench.restore(self.settings.layout)
+        self.inspector_left_action.setChecked(self.workbench.inspector_left())
+        self.stacked_action.setChecked(self.workbench.stacked())
 
     def closeEvent(self, event) -> None:
         if self.audio.recording:
