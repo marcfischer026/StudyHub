@@ -1,8 +1,10 @@
-"""The app's only animation: a short cross-fade when the layout changes.
+"""The layout's only animation: a short cross-fade when the layout changes.
 
 Used when you switch an inspector pane or show or hide a part. Mode switches
 are instant, like any segmented control.
-Nothing moves on hover and nothing loops. macOS "Reduce motion" turns it off.
+Nothing moves on hover and nothing loops. The one other moving thing is the
+live usage chart in the activity popup (usage_chart.py), and only while it is
+open. macOS "Reduce motion" turns both off.
 """
 
 from __future__ import annotations

@@ -233,3 +233,40 @@ class ModelKeeperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UsageChartTests(unittest.TestCase):
+    def test_history_keeps_full_readings_only(self):
+        from universe.ui.usage_chart import UsageHistory
+
+        history = UsageHistory()
+        history.add(Snapshot(battery=80, plugged=True))  # idle: battery only
+        history.add(Snapshot(cpu=30, gpu=None, ram_used=60))
+        self.assertEqual(len(history.readings), 1)
+        self.assertEqual(history.latest().cpu, 30)
+
+    def test_lines_break_where_sampling_paused(self):
+        from universe.ui.usage_chart import Reading, _runs
+
+        readings = [Reading(t, 10, 5 if t != 4 else None, 50) for t in (0, 2, 4, 6, 30, 32)]
+        self.assertEqual([len(r) for r in _runs(readings, "cpu")], [4, 2])
+        self.assertEqual([len(r) for r in _runs(readings, "gpu")], [2, 1, 2])
+
+    def test_popup_shows_chart_and_readouts_ease_to_values(self):
+        jobs = JobManager()
+        indicator = ActivityIndicator(jobs, Settings())
+        indicator.timer.stop()
+        now = time.monotonic()
+        for i in range(30):
+            indicator.history.add(Snapshot(cpu=20 + i, gpu=10, ram_used=55), t=now - 60 + 2 * i)
+        indicator.snapshot = Snapshot(cpu=50, gpu=12, gpu_mem_gb=4.2, ram_used=55, ram_total_gb=16)
+        from universe.ui.jobs import ActivityPopup
+
+        popup = ActivityPopup(indicator)
+        chart = popup.chart
+        chart.resize(380, chart.sizeHint().height())
+        chart.hover_x = 300
+        self.assertFalse(chart.grab().isNull())  # paints tiles, lines and the hover label
+        for _ in range(60):
+            chart._tick()
+        self.assertAlmostEqual(chart.shown["cpu"], 50, delta=0.5)

@@ -61,6 +61,14 @@ class Tokens:
         return colour
 
 
+def qcolor(css: str) -> QColor:
+    """A token as a QColor; QColor itself doesn't read the ``rgba(r,g,b,a)`` form the tokens use."""
+    if css.startswith("rgba("):
+        r, g, b, a = (float(part) for part in css[5:-1].split(","))
+        return QColor(int(r), int(g), int(b), round(a * 255))
+    return QColor(css)
+
+
 SF_MONO = Path("/System/Library/Fonts/SFNSMono.ttf")  # ships with macOS but Qt doesn't list it
 
 

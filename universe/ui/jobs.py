@@ -34,6 +34,7 @@ from ..services.jobcontrol import JobControl
 from ..services.system_monitor import Snapshot, SystemMonitor
 from . import icons
 from .style import WARNING
+from .usage_chart import UsageChart, UsageHistory
 from .workers import Worker
 
 AUTO_REASONS = ("battery", "unplugged")
@@ -332,6 +333,7 @@ class ActivityIndicator(QWidget):
         self.models.changed.connect(self.refresh)
         self.monitor = SystemMonitor()
         self.snapshot = Snapshot()
+        self.history = UsageHistory()  # for the popup's chart
         self.popup: ActivityPopup | None = None
 
         self.label = QToolButton()
@@ -376,11 +378,13 @@ class ActivityIndicator(QWidget):
         anchor = self.mapToGlobal(QPoint(self.width(), 0))
         self.popup.move(anchor.x() - self.popup.width(), anchor.y() - self.popup.height() - 6)
         self.popup.show()
+        self._sample()  # full readings now, not up to two seconds later
 
     def _sample(self) -> None:
         busy = self.jobs.busy
         detailed = busy or bool(self.popup and self.popup.isVisible())
         self.snapshot = self.monitor.snapshot(with_gpu=detailed) if detailed else self._battery_only()
+        self.history.add(self.snapshot)
         self._apply_battery_rules()
         self.refresh()
 
@@ -461,8 +465,11 @@ class ActivityPopup(QFrame):
         job_row.addWidget(self.cancel_btn)
         self.queue_label = QLabel(wordWrap=True)
         self.queue_label.setObjectName("muted")
+        self.chart = UsageChart(indicator.history)
+        self.chart.setVisible(SystemMonitor.available())
         self.resources = QLabel()
         self.resources.setTextFormat(Qt.TextFormat.RichText)
+        self.resources.setObjectName("muted")
         self.history = QLabel(wordWrap=True)
         self.history.setObjectName("muted")
 
@@ -509,6 +516,7 @@ class ActivityPopup(QFrame):
         layout.addLayout(job_row)
         layout.addWidget(self.queue_label)
         layout.addWidget(_rule())
+        layout.addWidget(self.chart)
         layout.addWidget(self.resources)
         layout.addWidget(_rule())
         layout.addLayout(lm_head)
@@ -604,18 +612,16 @@ class ActivityPopup(QFrame):
             "Waiting: " + ", ".join(j.title for j in jobs.queue) if jobs.queue else "Queue is empty."
         )
 
+        self.chart.update_from(snap)
         rows = []
-        if snap.cpu is not None:
-            rows.append(f"CPU (whole Mac): <b>{_bar(snap.cpu)}</b>")
-            rows.append(f"GPU: <b>{_bar(snap.gpu)}</b>" + (f" · {snap.gpu_mem_gb:.1f} GB in GPU memory (models)" if snap.gpu_mem_gb is not None else ""))
-            rows.append(f"RAM: <b>{_bar(snap.ram_used)}</b> of {snap.ram_total_gb:.0f} GB")
-            for proc in snap.processes:
-                rows.append(f"&nbsp;&nbsp;{proc.name}: {proc.cpu:.0f}% CPU · {proc.ram_gb:.2f} GB")
-        elif not SystemMonitor.available():
+        for proc in snap.processes:
+            rows.append(f"{proc.name}: {proc.cpu:.0f}% CPU · {proc.ram_gb:.2f} GB")
+        if not SystemMonitor.available():
             rows.append("Install <code>psutil</code> to see CPU, GPU and memory use.")
         if snap.battery is not None:
-            rows.append(f"Battery: <b>{snap.battery}%</b> · {'charging / plugged in' if snap.plugged else 'on battery'}")
-        self.resources.setText("<br>".join(rows) or "Measuring…")
+            rows.append(f"Battery {snap.battery}% · {'charging / plugged in' if snap.plugged else 'on battery'}")
+        self.resources.setText("<br>".join(rows))
+        self.resources.setVisible(bool(rows))
 
         done = [
             f"{'✓' if j.status == 'done' else '✗' if j.status == 'failed' else '–'} {j.title} ({_fmt_time(j.elapsed())})"
