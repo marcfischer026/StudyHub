@@ -215,7 +215,7 @@ class UsageChart(QWidget):
             metrics = QFontMetricsF(value)
             baseline = inner.top() + 14 + metrics.ascent()
             painter.setPen(self.p.text)
-            text = f"{self.shown[key]:5.1f}" if known[key] else "  —"
+            text = _number(self.shown[key]) if known[key] else "—"
             painter.drawText(QPointF(inner.left(), baseline), text.strip())
             change = _change(readings, key, now)
             if change is not None and known[key]:
@@ -232,7 +232,7 @@ class UsageChart(QWidget):
             stats = _stats(readings, key)
             painter.setFont(small)
             painter.setPen(self.p.dim)
-            line = f"H {stats[0]:.0f}  L {stats[1]:.0f}  Ø {stats[2]:.0f}" if stats else "H –  L –  Ø –"
+            line = f"H {stats[0]:.0f} L {stats[1]:.0f} Ø {stats[2]:.0f}" if stats else "H – L – Ø –"
             painter.drawText(inner, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, line)
         painter.setPen(QPen(self.p.frame, 1))
         y = int(top + QUOTE_H) - 1
@@ -382,6 +382,11 @@ def _smooth(points: list[QPointF]) -> QPainterPath:
         path.quadTo(corner, (corner + after) / 2)
     path.lineTo(points[-1])
     return path
+
+
+def _number(value: float) -> str:
+    """One decimal, except at 100 where the column has no room for it."""
+    return f"{value:.0f}" if value >= 99.95 else f"{value:.1f}"
 
 
 def _change(readings: list[Reading], key: str, now: float) -> float | None:
