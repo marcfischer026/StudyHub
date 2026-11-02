@@ -68,9 +68,13 @@ _FENCE = re.compile(r"^\s*(?:```|~~~)[\w-]*\s*$")
 _FENCE_JOIN = re.compile(r"^\s*(?:```|~~~)\s*\n\s*(?:```|~~~)[\w-]*\s*$\n?", re.MULTILINE)  # two fenced parts pasted as one
 _DECORATION = " \t*_#>`"
 _FIGURE_LINE = re.compile(r"^\W*\[?\s*(?:Figure|Abbildung|Grafik)\s*:.*$", re.IGNORECASE | re.MULTILINE)
+_IMAGE_LINK = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+# Math fonts without a proper Unicode map come out as Syriac to Sinhala letters or private-use
+# characters: no words to compare. U+F0xx is left out: that is where Wingdings bullets land.
+GARBLED = re.compile("[\u0700-\u0dff\u1d00-\u1dbf\ue000-\uefff\uf100-\uf8ff]")
 _LATEX_COMMAND = re.compile(r"\\[a-zA-Z]+")
 _WORD = re.compile(r"[^\W\d_]{3,}")
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_NUMBER = re.compile(r"[0-9]+(?:[.,][0-9]+)*")  # not \d: garbled math fonts produce Tamil and Malayalam digits
 
 MIN_COVERAGE = 0.7  # below this share of the PDF's words, the conversion lost something
 MAX_ADDED = 0.3  # above this share of words the PDF does not have, the tool made things up
@@ -87,11 +91,11 @@ def stamp(ref: str, page: int) -> str:
 def _words(text: str) -> set[str]:
     text = unicodedata.normalize("NFKC", text)
     text = re.sub(r"(\w)[-\u00ad]\s*\n\s*(\w)", r"\1\2", text)  # words the PDF hyphenated across lines
-    return {w.casefold() for w in _WORD.findall(text)}
+    return {w.casefold() for w in _WORD.findall(text) if not GARBLED.search(w)}
 
 
 def _numbers(text: str) -> set[str]:
-    return {re.sub(r"\D", "", n) for n in _NUMBER.findall(unicodedata.normalize("NFKC", text))}
+    return {re.sub(r"[^0-9]", "", n) for n in _NUMBER.findall(GARBLED.sub(" ", unicodedata.normalize("NFKC", text)))}
 
 
 @dataclass(frozen=True)
@@ -126,7 +130,7 @@ def check_page(raw_text: str, markdown: str, page: int = 0, common_numbers: froz
     raw_words = _words(raw_text)
     if not raw_words and not _numbers(raw_text):
         return PageCheck(scanned=True)
-    own_text = _LATEX_COMMAND.sub(" ", _FIGURE_LINE.sub("", markdown))
+    own_text = _LATEX_COMMAND.sub(" ", _FIGURE_LINE.sub("", _IMAGE_LINK.sub("", markdown)))
     words = _words(own_text)
     coverage = len(raw_words & _words(markdown)) / len(raw_words) if raw_words else 1.0
     added = len(words - raw_words) / len(words) if words else 0.0
@@ -149,7 +153,7 @@ def common_numbers(raw_texts: list[str]) -> frozenset[str]:
 def printed_page_offset(raw_texts: list[str]) -> int:
     """How far the numbers printed on the slides run ahead of the PDF's pages: a title slide often goes uncounted."""
     found = [_numbers(text) for text in raw_texts]
-    hits = {offset: sum(str(page + offset) in numbers for page, numbers in enumerate(found, start=1)) for offset in range(-3, 11)}
+    hits = {offset: sum(str(page + offset) in numbers for page, numbers in enumerate(found, start=1)) for offset in range(-3, 301)}  # a later block of one lecture starts at slide 24
     best = max(hits, key=lambda offset: hits[offset])
     return best if hits[best] >= 3 and hits[best] > len(found) / 3 else 0
 
@@ -321,6 +325,19 @@ class ConversionReport:
     @property
     def imported_pages(self) -> int:
         return sum(len(d.imported) for d in self.documents)
+
+    def merge(self, report: "ConversionReport") -> None:
+        """Adds a later import; a page imported again counts once, with its latest check."""
+        self.problems += [problem for problem in report.problems if problem not in self.problems]
+        for new in report.documents:
+            known = next((d for d in self.documents if d.ref == new.ref), None)
+            if known is None:
+                self.documents.append(new)
+                continue
+            redone = set(new.imported)
+            known.imported = sorted(set(known.imported) | redone)
+            known.weak = [item for item in known.weak if item[0] not in redone] + new.weak
+            known.missing = new.missing
 
     def summary(self) -> str:
         if not self.documents and not self.problems:

@@ -162,6 +162,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(common, frozenset({"2026"}))
         self.assertEqual(pdf_conversion.printed_page_offset([f"Folie {n + 1}" for n in range(1, 7)]), 1)
         self.assertEqual(pdf_conversion.printed_page_offset(["Bilanz 1200", "Aktiva", "Passiva", "Umlauf 77"]), 0)
+        self.assertEqual(pdf_conversion.printed_page_offset([f"Technik {n + 23}" for n in range(1, 10)]), 23)  # the second block of a lecture
         self.assertTrue(check_page("Bilanz 8", "Bilanz", page=7, printed_offset=1).ok)
         self.assertFalse(check_page("Bilanz 9", "Bilanz", page=7, printed_offset=1).ok)
         self.assertTrue(check_page("Bilanz 2026 7", "Bilanz", page=7, common_numbers=common).ok)

@@ -118,7 +118,7 @@ To try it out with a throwaway workspace, set `UNIVERSE_DATA_DIR` to another fol
 
 It works per subject, with or without an open lecture, on the **Claude** tab. No API key is needed: you drag files and paste text.
 
-1. **PDFs to Markdown.** *Export PDFs* writes stamped copies to `claude/PDFs to convert/` and copies a prompt for Gemini or Copilot. *Paste result* or *Import .md files…* brings the Markdown back; it is merged page by page into `converted/` and checked against the PDF.
+1. **PDFs to Markdown.** *Convert on this Mac* does it offline (see below). Or *Export PDFs* writes stamped copies to `claude/PDFs to convert/` and copies a prompt for Gemini or Copilot. *Paste result* or *Import .md files…* brings the Markdown back; it is merged page by page into `converted/` and checked against the PDF.
 2. **Export for Claude.** Writes `claude/<date> <scope>/` with `PROMPT.md`, `ALL IN ONE.md`, `CLAUDE.md`, `attach/` (the `.md` files to drag into Claude) and `reply/`. The prompt goes on the clipboard. Slides count as the definitive source, then what was said, past exams and tasks, your notes, the professor profile, and last Claude's own knowledge.
 3. **Import Claude's reply.** The reply is JSON Lines (`universe.reply/2`), one record per line, so a broken line costs one record rather than the whole reply. Every citation is checked against the cited page or line. The report can copy a fix request and a follow-up for missing pages, and *Undo last import* goes back one step. Replies are merged as deltas, and your practice history is never rewritten.
 4. **Tutor.** Copy a prompt for new questions on your weak spots, or for a live tutor session. The results come back the same way.
@@ -128,6 +128,18 @@ Lines you marked private by hand never leave the Mac. Lines a small local model 
 **Practice** runs offline per learning objective with the FSRS-5 memory model, ranked by expected gain on exam day, and mock exams use questions held out of practice. **Guide** shows an exam sheet per topic with clickable citations. **Progress** shows coverage, exam-day recall (a model estimate) and the last mock score; there is no grade prediction.
 
 Claude Code can do the work in the export folder: `CLAUDE.md` tells it what to do, and `python -m universe.services.claude_reply <folder> --subject NAME` validates its reply.
+
+### Local PDF conversion
+
+*Convert on this Mac* converts every page still without Markdown, offline, with two converters. Marker reads every page: it keeps the PDF's own text, rebuilds tables as Markdown and formulas as LaTeX, and saves figures. Pages with formulas or tables are also read by MinerU's vision model, which catches details Marker misreads (overlined symbols, for example) but makes its own typos. Each such page is scored against the PDF's words and numbers, and the better version is kept; Marker on a tie. Scripts whose math fonts have a broken text layer are recognised and still compared by their words. Figures land in `converted/figures/` as `SL04-p12-1.jpg` and are linked from the Markdown: attach the ones that matter when you paste the export into Claude.
+
+Install once (about 2 GB, plus about 6 GB of models on the first run; needs [Homebrew](https://brew.sh)):
+
+```bash
+tools/install_converters.sh
+```
+
+Conversion takes a few minutes per deck, longer for formula-heavy scripts. *Stop* keeps the pages finished so far, and a second run continues with the rest. Check formula pages against the slides: neither converter is perfect on dense math.
 
 ### API mode (optional, off by default)
 
@@ -226,10 +238,11 @@ git config core.hooksPath .githooks
 ~/.universe_data/
 ├── settings.json
 ├── models/ggml-base.en.bin
+├── converters/             Marker and MinerU environments and models (tools/install_converters.sh)
 ├── Professors/<id>.json
 └── Subjects/<Subject>/
     ├── subject.json            name, description, default professor, tag colours, exam, excluded documents
-    ├── converted/              Markdown of the PDFs, one file per document
+    ├── converted/              Markdown of the PDFs, one file per document; figures/ holds their images
     ├── claude/                 PDFs to convert, and one folder per export (newest 5 kept)
     ├── study/                  ids.json, knowledge.json, events.jsonl (learning history), exports/, imports/
     ├── .index/                 LanceDB vector store

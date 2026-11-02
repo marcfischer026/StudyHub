@@ -7,7 +7,7 @@ Layout::
         .index/                      LanceDB vector store for the subject
         exams/                       PDFs imported as past exams, shared by all lectures
         exercises/                   PDFs imported as tasks / exercise sheets, shared by all lectures
-        converted/                   Markdown made from the PDFs by Gemini or Copilot (see pdf_conversion.py)
+        converted/                   Markdown made from the PDFs, here or by Gemini or Copilot (see pdf_conversion.py)
         claude/                      .md exports for Claude, one folder per export (see claude_export.py)
         study/                       what came back from Claude and the learning history (see study_store.py)
         Lectures/<Lecture>/

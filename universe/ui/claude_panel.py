@@ -39,8 +39,9 @@ from PySide6.QtWidgets import (
 
 from ..config import Settings
 from ..professors import ProfessorStore
-from ..services import api_mode, claude_export, pdf_conversion
+from ..services import api_mode, claude_export, local_conversion, pdf_conversion
 from ..services.claude_export import CHAT_BUDGET, LONG_BUDGET, ExportPlan, ExportResult
+from ..services.jobcontrol import JobControl
 from ..services.claude_reply import CheckedReply, check_reply, follow_up_prompt, parse_reply, repair_prompt
 from ..services.study_store import MergeSummary, StudyStore
 from ..services.subject_model import SubjectView, load_subject
@@ -328,12 +329,14 @@ class ClaudePanel(ScopedPanel):
     conversionsImported = Signal()
     replyImported = Signal()  # or undone: knowledge changed
     apiProgress = Signal(str)  # from a worker thread
+    localProgress = Signal(str)  # from a worker thread
 
     def __init__(self, professors: ProfessorStore, parent=None, settings: Settings | None = None):
         super().__init__(parent)
         self.professors = professors
         self.settings = settings or Settings()
         self._api_client: api_mode.ApiClient | None = None
+        self._local_control: JobControl | None = None
         self.view: SubjectView | None = None
         self.plan: ExportPlan | None = None
         self.result: ExportResult | None = None
@@ -400,14 +403,23 @@ class ClaudePanel(ScopedPanel):
         self.pdf_status = text_label()
         self.export_pdfs_btn = self._button("Export PDFs", self.export_pdfs, primary=True)
         self.export_pdfs_btn.setToolTip("Writes stamped copies, copies the converter prompt and shows the folder")
+        self.localProgress.connect(self.busy.setText)
+        self.convert_local_btn = self._button("Convert on this Mac", self.convert_local)
+        self.convert_local_btn.setToolTip(
+            "Marker and MinerU read the PDFs here, offline; each page keeps the better version"
+            if local_conversion.installed()
+            else "Not installed yet: see README → Local PDF conversion"
+        )
+        self.stop_local_btn = self._button("Stop", self.stop_local, hidden=True)
         self.pdf_report = text_label(selectable=True)
         self.pdf_report.hide()
         self.pdf_folder = FolderLine(self._copy)
         self.copy_missing_btn = self._button("Copy request for missing pages", self.copy_missing, hidden=True)
         return card(
             "1 · PDFs to Markdown",
-            text_label("Gemini or Copilot turn the PDFs into Markdown, so Claude reads tables and graphics too.", muted=True),
+            text_label("Marker and MinerU on this Mac, or Gemini and Copilot, turn the PDFs into Markdown, so Claude reads formulas, tables and graphics too.", muted=True),
             self.pdf_status,
+            button_row(self.convert_local_btn, self.stop_local_btn),
             button_row(
                 self.export_pdfs_btn,
                 self._button("Paste result", self.paste_conversion),
@@ -611,6 +623,7 @@ class ClaudePanel(ScopedPanel):
         self.view, self.plan = view, plan
         self.pdf_status.setText(conversion_status(view))
         self.export_pdfs_btn.setEnabled(bool(view.documents_for_export))
+        self.convert_local_btn.setEnabled(bool(view.documents_for_export) and local_conversion.installed() and self._local_control is None)
         count = plan.side_talk_lines
         self.side_talk.label.setText(f"Also send {count} line{'s' * (count != 1)} of other voices sorted out as side talk (may include classmates' private talk)")
         self.side_talk.setVisible(count > 0)
@@ -648,6 +661,41 @@ class ClaudePanel(ScopedPanel):
             self._show_conversion_text("\n".join(parts))
 
         self._run("Writing stamped PDFs…", lambda: pdf_conversion.export_pdfs(self._load(subject)), done)
+
+    def convert_local(self) -> None:
+        subject = self.subject
+        if subject is None or self._local_control is not None:
+            return
+        control = self._local_control = JobControl()
+        self._set_local_running(True)
+
+        def job():
+            return local_conversion.convert_subject(self._load(subject), control, self.localProgress.emit)
+
+        def done(report: pdf_conversion.ConversionReport) -> None:
+            self._local_ended()
+            self._conversion_done(report)
+
+        def failed(text: str) -> None:
+            self._local_ended()
+            self._show_conversion_text(("Stopped." if text == "Cancelled" else f"Stopped: {text}") + "\nThe pages finished before that are saved.")
+            self.conversionsImported.emit()
+            self.mark_changed()
+
+        self._run("Starting the converters…", job, done, failed)
+
+    def stop_local(self) -> None:
+        if self._local_control is not None:
+            self._local_control.cancel()
+            self.busy.setText("Stopping the converters…")
+
+    def _set_local_running(self, running: bool) -> None:
+        self.convert_local_btn.setEnabled(not running and local_conversion.installed())
+        self.stop_local_btn.setVisible(running)
+
+    def _local_ended(self) -> None:
+        self._local_control = None
+        self._set_local_running(False)
 
     def _show_conversion_text(self, text: str) -> None:
         self.pdf_report.setText(text)

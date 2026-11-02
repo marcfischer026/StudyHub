@@ -164,19 +164,6 @@ def _convert_run(client: ApiClient, document, first: int, last: int) -> str:
     return client.chat([{"role": "user", "content": content}]).text
 
 
-def _add_report(total: pdf_conversion.ConversionReport, report: pdf_conversion.ConversionReport) -> None:
-    total.problems += [problem for problem in report.problems if problem not in total.problems]
-    for new in report.documents:
-        known = next((d for d in total.documents if d.ref == new.ref), None)
-        if known is None:
-            total.documents.append(new)
-            continue
-        redone = set(new.imported)
-        known.imported = sorted(set(known.imported) | redone)
-        known.weak = [item for item in known.weak if item[0] not in redone] + new.weak
-        known.missing = new.missing
-
-
 def convert_pdfs(view: SubjectView, client: ApiClient, progress: Progress = lambda _text: None) -> pdf_conversion.ConversionReport:
     """Every page still without Markdown, except from excluded documents. Saved call by call, so
     stopping or an error keeps what has come back."""
@@ -189,7 +176,7 @@ def convert_pdfs(view: SubjectView, client: ApiClient, progress: Progress = lamb
             pages = [n for n in range(1, document.page_count + 1) if n not in done]
             for first, last in pdf_conversion._ranges(pages, PAGES_PER_CALL):
                 progress(f"Converting {document.ref}, pages {first}-{last} of {document.page_count}…")
-                _add_report(total, pdf_conversion.import_converted(view, _convert_run(client, document, first, last)))
+                total.merge(pdf_conversion.import_converted(view, _convert_run(client, document, first, last)))
     return total
 
 
