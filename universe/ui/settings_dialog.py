@@ -26,6 +26,7 @@ from ..config import LANGUAGES, Settings, data_root, installed_models
 from ..services import api_mode, lmstudio, local_llm, moodle_ical
 from ..services.audio_recorder import AudioRecorder
 from . import workers
+from .segmented import SegmentedTabs
 from .workers import Worker
 
 
@@ -78,6 +79,7 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
+        layout.addWidget(SegmentedTabs(tabs))
         layout.addWidget(tabs)
         layout.addWidget(buttons)
 

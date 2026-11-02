@@ -47,7 +47,8 @@ class Tokens:
     card: str
     border: str
     hover: str
-    separator: str  # opaque hairline: the window behind may be see-through
+    separator: str  # opaque hairline
+    raised: str  # the chosen segment of a segmented control
     mono: str  # font family for times and timestamps
 
     def accent_tint(self, alpha: int) -> QColor:
@@ -93,6 +94,7 @@ def tokens(dark: bool | None = None) -> Tokens:
             border="rgba(255,255,255,0.12)",
             hover="rgba(255,255,255,0.08)",
             separator="#3A3A3C",
+            raised="#636366",
             mono=mono,
         )
     return Tokens(
@@ -106,6 +108,7 @@ def tokens(dark: bool | None = None) -> Tokens:
         border="rgba(0,0,0,0.12)",
         hover="rgba(0,0,0,0.06)",
         separator="#D5D5D7",
+        raised="#FFFFFF",
         mono=mono,
     )
 
@@ -136,6 +139,14 @@ def stylesheet(t: Tokens | None = None) -> str:
     QToolButton#sidebarAction {{ border: none; border-radius: {s}px; padding: 4px 8px; background: transparent; }}
     QToolButton#sidebarAction:hover {{ background: {t.hover}; }}
     QTabBar::tab {{ padding: 4px 12px; }}
+    /* A macOS segmented control (segmented.py): a light track, the chosen segment raised. */
+    QFrame#segmentTrack {{ background: {t.hover}; border-radius: {m}px; }}
+    QToolButton#segmentItem {{
+        background: transparent; border: none; border-radius: {s}px; padding: 3px 12px; color: {t.text};
+    }}
+    QToolButton#segmentItem:checked {{ background: {t.raised}; font-weight: 600; }}
+    QToolButton#segmentItem:hover:!checked {{ color: {t.accent}; }}
+    QToolButton#segmentItem:disabled {{ color: {t.muted}; }}
 
     QPushButton#recordButton {{
         background: {RECORD}; color: white; border: none; border-radius: 13px;

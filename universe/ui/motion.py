@@ -1,6 +1,7 @@
 """The app's only animation: a short cross-fade when the layout changes.
 
-Used when you switch a mode or an inspector pane, or show or hide a part.
+Used when you switch an inspector pane or show or hide a part. Mode switches
+are instant, like any segmented control.
 Nothing moves on hover and nothing loops. macOS "Reduce motion" turns it off.
 """
 

@@ -30,6 +30,7 @@ from .claude_panel import ClaudePanel
 from .guide_panel import GuidePanel
 from .practice_panel import PracticePanel
 from .progress_panel import ProgressPanel
+from .segmented import SegmentedTabs
 
 ROLE = Qt.ItemDataRole.UserRole
 DOCUMENT_SOURCES = ("slides", "exams", "exercises")  # a hit's source is the folder of its PDF
@@ -54,7 +55,6 @@ class AIPanel(QWidget):
         self.guide = GuidePanel(professors)
         self.progress = ProgressPanel(professors)
         self.tabs = QTabWidget()
-        self.tabs.setUsesScrollButtons(True)
         self.tabs.addTab(self.claude, "Claude")
         self.tabs.addTab(self.practice, "Practice")
         self.tabs.addTab(self.guide, "Guide")
@@ -73,7 +73,9 @@ class AIPanel(QWidget):
         self.progress.practiseTopic.connect(self.practise_topic)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(4, 8, 4, 4)
+        self.tab_bar = SegmentedTabs(self.tabs)
+        layout.addWidget(self.tab_bar)
         layout.addWidget(self.tabs)
         self.set_scope(None, None)
 
@@ -107,6 +109,7 @@ class AIPanel(QWidget):
             self.results.clear()
         self.subject, self.lecture = subject, lecture
         self.tabs.setEnabled(subject is not None)
+        self.tab_bar.setEnabled(subject is not None)
         for panel in (self.claude, self.practice, self.guide, self.progress):
             panel.set_scope(subject, lecture)
 

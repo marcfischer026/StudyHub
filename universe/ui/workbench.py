@@ -77,11 +77,14 @@ class Inspector(QWidget):
         if len(self.keys) == 1:
             self.show_pane(key)
 
-    def show_pane(self, key: str) -> None:
+    def show_pane(self, key: str, animate: bool = True) -> None:
         index = self.keys.index(key)
         self.group.button(index).setChecked(True)
         if self.stack.currentIndex() != index:
-            motion.crossfade(self.stack, lambda: self.stack.setCurrentIndex(index))
+            if animate:
+                motion.crossfade(self.stack, lambda: self.stack.setCurrentIndex(index))
+            else:
+                self.stack.setCurrentIndex(index)
             self.paneChanged.emit(key)
 
     def current(self) -> str:
@@ -163,14 +166,24 @@ class Workbench(QSplitter):
         self.saved[self.mode] = self._snapshot()
         self.mode = key
         fresh = key not in self.saved
-        motion.crossfade(self, lambda: self._apply_preset(key) if fresh else self._restore_snapshot(self.saved[key]))
+        # Instant, like a segmented control: a fade here felt like lag.
+        self._rearrange(lambda: self._apply_preset(key) if fresh else self._restore_snapshot(self.saved[key]))
         self.modeChanged.emit(key, fresh)
 
     def reset_mode(self) -> None:
         """Forget your changes to the current mode."""
         self.saved.pop(self.mode, None)
-        motion.crossfade(self, lambda: self._apply_preset(self.mode))
+        self._rearrange(lambda: self._apply_preset(self.mode))
         self.modeChanged.emit(self.mode, True)
+
+    def _rearrange(self, change) -> None:
+        """Several resizes and show/hides, painted once."""
+        window = self.window()
+        window.setUpdatesEnabled(False)
+        try:
+            change()
+        finally:
+            window.setUpdatesEnabled(True)
 
     def _apply_preset(self, key: str) -> None:
         mode = MODES[key]
@@ -183,7 +196,7 @@ class Workbench(QSplitter):
         notes, slides = mode.center
         self.center.setSizes([middle * notes // (notes + slides) or 1, middle * slides // (notes + slides) or 1])
         if mode.pane in self.inspector.keys:
-            self.inspector.show_pane(mode.pane)
+            self.inspector.show_pane(mode.pane, animate=False)
 
     def _set_column_sizes(self, sidebar: int, center: int, inspector: int) -> None:
         width = {self.parts["sidebar"]: sidebar, self.center: center, self.inspector: inspector}
@@ -267,7 +280,7 @@ class Workbench(QSplitter):
         self.priority = list(STEP_ASIDE)
         self._fit()
         if snapshot.get("pane") in self.inspector.keys:
-            self.inspector.show_pane(snapshot["pane"])
+            self.inspector.show_pane(snapshot["pane"], animate=False)
 
     def state(self) -> dict:
         saved = dict(self.saved)
