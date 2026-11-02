@@ -52,21 +52,24 @@ def _palette_color(role: QPalette.ColorRole, group: QPalette.ColorGroup = QPalet
 
 
 @lru_cache(maxsize=512)
-def _icon(name: str, color: str, disabled: str, size: int) -> QIcon:
+def _icon(name: str, color: str, disabled: str, on: str, size: int) -> QIcon:
     result = QIcon()
     for ratio in (1.0, 2.0):
-        result.addPixmap(pixmap(name, color, size, ratio), QIcon.Mode.Normal)
+        result.addPixmap(pixmap(name, color, size, ratio), QIcon.Mode.Normal, QIcon.State.Off)
+        result.addPixmap(pixmap(name, on or color, size, ratio), QIcon.Mode.Normal, QIcon.State.On)
         result.addPixmap(pixmap(name, disabled, size, ratio), QIcon.Mode.Disabled)
     return result
 
 
-def icon(name: str, color: QColor | str | None = None, size: int = SIZE) -> QIcon:
+def icon(name: str, color: QColor | str | None = None, size: int = SIZE, on_color: QColor | str | None = None) -> QIcon:
     """Icon ``name`` (Lucide file name without ``.svg``) in ``color``.
 
     Without a colour it follows the text colour of the current light/dark
-    palette, so it reads like the label next to it.
+    palette, so it reads like the label next to it. ``on_color`` tints it on
+    checked buttons (e.g. the selected inspector pane).
     """
     normal = QColor(color) if color is not None else _palette_color(QPalette.ColorRole.WindowText)
     disabled = _palette_color(QPalette.ColorRole.WindowText, QPalette.ColorGroup.Disabled)
     hexargb = QColor.NameFormat.HexArgb
-    return _icon(name, normal.name(hexargb), disabled.name(hexargb), size)
+    on = QColor(on_color).name(hexargb) if on_color is not None else ""
+    return _icon(name, normal.name(hexargb), disabled.name(hexargb), on, size)

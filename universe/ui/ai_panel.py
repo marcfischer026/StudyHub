@@ -1,4 +1,4 @@
-"""AI Tutor dock: hosts the Claude, Practice, Guide and Progress tabs, and Search.
+"""AI Tutor pane: hosts the Claude, Practice, Guide and Progress tabs, and Search.
 
 It binds to the subject, not to a lecture: everything here works with no lecture open.
 """

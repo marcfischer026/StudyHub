@@ -1,4 +1,4 @@
-"""Transcript dock: whisper.cpp segments with relevance labels.
+"""Transcript pane: whisper.cpp segments with relevance labels.
 
 Click a line to hear it. Exam-relevant lines are highlighted (★), questions and
 answers marked, private talk greyed out, other voices than the lecturer's tagged

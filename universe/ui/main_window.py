@@ -1,4 +1,4 @@
-"""Main window: toolbar with Record, notes in the centre, dockable panels around."""
+"""Main window: glass toolbar with Record, then sidebar | notes beside slides | inspector."""
 
 from __future__ import annotations
 
@@ -11,13 +11,11 @@ from PySide6.QtCore import QByteArray, QEvent, QFile, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QDockWidget,
     QInputDialog,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSizePolicy,
-    QMenu,
     QStackedWidget,
     QToolBar,
     QToolButton,
@@ -31,12 +29,13 @@ from ..services.pdf_tools import guess_kind
 from ..services.subject_model import load_subject, locate
 from ..services.vector_index import SubjectIndex, get_embedder
 from ..storage import AUDIO_SUFFIXES, DOC_TYPES, Lecture, Subject, Workspace, clock_time
-from . import workers
+from . import icons, workers
 from .ai_panel import AIPanel, hit_target
 from .audio import AudioController, PlayerBar, RecordControls, RecordingsPanel, open_mic_privacy_settings
 from .claude_panel import study_pool
 from .documents_panel import DocumentsPanel
 from .note_editor import NoteEditor
+from .platform import glass
 from .professor_dialog import AssignProfessorDialog, ProfessorManager
 from .progress_panel import ExamDialog
 from .settings_dialog import SettingsDialog
@@ -44,11 +43,17 @@ from .sidebar import Sidebar
 from .transcript_panel import TranscriptPanel
 from .jobs import ActivityIndicator, JobManager, poll_pool
 from .welcome import LectureView, WelcomePage
+from .workbench import Workbench
 from .workers import Worker
 
-# Bump when the default dock arrangement changes, so stale saved layouts are ignored.
-STATE_VERSION = 3
 DRAG_EVENTS = (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop)
+# View menu: (part, title, shortcut). ⌥⌘ keeps ⌘1–⌘4 free for workspace modes.
+PART_ACTIONS = (
+    ("sidebar", "Sidebar", "Ctrl+Alt+S"),
+    ("notes", "Notes", "Ctrl+Alt+N"),
+    ("documents", "Documents", "Ctrl+Alt+P"),
+    ("inspector", "Inspector", "Ctrl+Alt+I"),
+)
 
 
 def dropped_files(mime) -> list[Path]:
@@ -71,16 +76,12 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("UniVerse")
         self.resize(1440, 900)
-        self.setDockNestingEnabled(True)
-        self.setDockOptions(
-            QMainWindow.DockOption.AnimatedDocks
-            | QMainWindow.DockOption.AllowNestedDocks
-            | QMainWindow.DockOption.AllowTabbedDocks
-        )
+        self.setUnifiedTitleAndToolBarOnMac(True)
+        glass.prepare_window(self)  # before the window exists natively
 
         self.jobs = JobManager(self)  # transcription + local AI, one at a time, pausable
 
-        # centre: welcome page or the open lecture (header, notes, player)
+        # notes: welcome page or the open lecture (header, notes, player)
         self.audio = AudioController(settings, self)
         self.notes = NoteEditor(
             time_source=self.audio.time_source, context_source=lambda: self._note_context(), clock_source=self.audio.clock
@@ -91,9 +92,7 @@ class MainWindow(QMainWindow):
         self.center = QStackedWidget()
         self.center.addWidget(self.welcome)
         self.center.addWidget(self.lecture_view)
-        self.setCentralWidget(self.center)
 
-        # docks
         self.sidebar = Sidebar(self.workspace)
         self.documents = DocumentsPanel(self._import_folder)
         self.documents.viewer.figureClipped.connect(self._add_figure)
@@ -105,25 +104,21 @@ class MainWindow(QMainWindow):
             ensure_lecture=self.ensure_lecture,
             lectures=lambda: [lec for subject in self.workspace.subjects() for lec in subject.lectures()],
         )
-        self.docks: dict[str, QDockWidget] = {}
-        for key, title, widget in (
-            ("workspace", "Subjects", self.sidebar),
-            ("documents", "Documents", self.documents),
-            ("transcript", "Transcript", self.transcript),
-            ("ai", "AI Tutor", self.ai),
-            ("recordings", "Recordings", self.recordings),
+        self.workbench = Workbench(self.sidebar, self.center, self.documents)
+        for key, title, widget, icon in (
+            ("transcript", "Transcript", self.transcript, "file-text"),
+            ("recordings", "Recordings", self.recordings, "mic"),
+            ("ai", "AI Tutor", self.ai, "graduation-cap"),
         ):
-            dock = QDockWidget(title, self)
-            dock.setObjectName(f"dock_{key}")
-            dock.setWidget(widget)
-            self.docks[key] = dock
+            self.workbench.inspector.add_pane(key, title, widget, icon)
+        self.setCentralWidget(self.workbench)
 
         self._build_toolbar()
         self.activity = ActivityIndicator(self.jobs, settings)
         self.statusBar().addPermanentWidget(self.activity)
         self.activity.models.message.connect(lambda text: self.statusBar().showMessage(text, 10000))
         self.jobs.changed.connect(self._on_jobs_changed)
-        self._default_layout()
+        self._apply_glass()
         self._build_menus()
         self._connect()
 
@@ -131,7 +126,6 @@ class MainWindow(QMainWindow):
         # PDFs and audio can be dropped anywhere in the window, panels included.
         self.setAcceptDrops(True)
         QApplication.instance().installEventFilter(self)
-        self.center.setVisible(self.settings.notes_visible)
         self.open_lecture(None)
         self.sidebar.select_by_name(settings.last_subject, settings.last_lecture)
         QTimer.singleShot(0, lambda: setattr(self, "_ready", True))
@@ -155,92 +149,82 @@ class MainWindow(QMainWindow):
         bar.setFloatable(False)
         bar.setAllowedAreas(Qt.ToolBarArea.TopToolBarArea)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+        self.toolbar = bar
 
+        # One checkable action per part: the toolbar toggles and the View menu share them.
+        self.part_actions: dict[str, QAction] = {}
+        for part, title, shortcut in PART_ACTIONS:
+            action = QAction(title, self, checkable=True, checked=True)
+            action.setShortcut(QKeySequence(shortcut))
+            action.toggled.connect(lambda visible, p=part: self.workbench.set_shown(p, visible))
+            self.part_actions[part] = action
+        self.notes_action = self.part_actions["notes"]
+        self.workbench.visibilityChanged.connect(self._on_part_toggled)
+
+        sidebar_btn = self._toggle_button("sidebar", "panel-left", "Show or hide the sidebar")
+        bar.addWidget(sidebar_btn)
+        # Where you are lives in the window title; the toolbar keeps its room for actions.
         self.record_controls = RecordControls(self.audio)
+        self.record_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         bar.addWidget(self.record_controls)
+        stamp = QPushButton(" Timestamp", icon=icons.icon("timer"))
+        stamp.setToolTip("Insert [▶ HH:MM:SS] at the current recording/playback time (⌘T)")
+        stamp.clicked.connect(self.notes.insert_timestamp)
+        bar.addWidget(stamp)
+
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
 
-        stamp = QPushButton("⏱  Timestamp")
-        stamp.setToolTip("Insert [▶ HH:MM:SS] at the current recording/playback time (⌘T)")
-        stamp.clicked.connect(self.notes.insert_timestamp)
-        export = QPushButton("⇪  Export for Claude")
+        export = QPushButton(" Export for Claude", icon=icons.icon("upload", "white"))
         export.setObjectName("primaryButton")
         export.setToolTip("Write this subject as .md files for Claude, with the prompt on the clipboard (⌘E)")
         export.clicked.connect(self._export_for_claude)
-        import_btn = QPushButton("⇩  Import reply")
+        import_btn = QPushButton(" Import reply", icon=icons.icon("download"))
         import_btn.setToolTip("Bring Claude's reply back in")
         import_btn.clicked.connect(self._focus_import)
         self.lecture_buttons = (stamp,)
         self.subject_buttons = (export, import_btn)  # work with no lecture open
-        for button in (*self.lecture_buttons, *self.subject_buttons):
+        for button in self.subject_buttons:
             bar.addWidget(button)
+        bar.addWidget(self._toggle_button("inspector", "panel-right", "Show or hide the inspector"))
 
-        # Closed panels come back from here (same menu as View in the menu bar).
-        self.panels_menu = QMenu("Panels", self)
-        # Notes live in the central area, not a dock; hiding it lets the docks take the space.
-        self.notes_action = QAction("Notes", self, checkable=True, checked=self.settings.notes_visible)
-        self.notes_action.setShortcut(QKeySequence("Ctrl+0"))
-        self.notes_action.toggled.connect(self._set_notes_visible)
-        self.panels_menu.addAction(self.notes_action)
-        for number, dock in enumerate(self.docks.values(), start=1):
-            action = dock.toggleViewAction()
-            action.setShortcut(QKeySequence(f"Ctrl+{number}"))
-            action.toggled.connect(lambda visible, d=dock: self._on_panel_toggled(d, visible))
-            self.panels_menu.addAction(action)
-        self.panels_menu.addSeparator()
-        self.panels_menu.addAction("Reset Layout", lambda: (self.notes_action.setChecked(True), self._default_layout()))
-        panels = QToolButton(text="▦  Panels")
-        panels.setObjectName("panelsButton")
-        panels.setToolTip("Show or hide panels — closed panels can be reopened here")
-        panels.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        panels.setMenu(self.panels_menu)
-        bar.addWidget(panels)
+    def _toggle_button(self, part: str, icon: str, tip: str) -> QToolButton:
+        button = QToolButton(objectName="chromeToggle")
+        button.setDefaultAction(self.part_actions[part])
+        button.setIcon(icons.icon(icon))
+        shortcut = self.part_actions[part].shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+        button.setToolTip(f"{tip} ({shortcut})")
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        return button
 
-    def _on_panel_toggled(self, dock: QDockWidget, visible: bool) -> None:
-        if not self._ready:  # restoreState also toggles panels
+    def _apply_glass(self) -> None:
+        """Glass on the chrome; everything you read stays solid."""
+        glass.apply(self.sidebar, glass.Role.SIDEBAR)
+        glass.apply(self.toolbar, glass.Role.TOOLBAR)
+        glass.apply(self.statusBar(), glass.Role.STATUS)
+        glass.apply(self.workbench.inspector.header, glass.Role.HEADER)
+        for widget in (self.center, self.documents, self.workbench.inspector.stack):
+            glass.solid(widget)
+
+    def _on_part_toggled(self, part: str, visible: bool) -> None:
+        action = self.part_actions[part]
+        if action.isChecked() != visible:
+            action.blockSignals(True)  # the workbench already changed; just mirror it
+            action.setChecked(visible)
+            action.blockSignals(False)
+        if not self._ready:  # restoring the saved layout also toggles parts
             return
-        if visible:
-            dock.raise_()
-        else:
-            shortcut = dock.toggleViewAction().shortcut().toString(QKeySequence.SequenceFormat.NativeText)
-            self.statusBar().showMessage(
-                f"“{dock.windowTitle()}” closed — reopen it any time from ▦ Panels (top right) or {shortcut}.", 10000
-            )
-
-    def _set_notes_visible(self, visible: bool) -> None:
-        self.settings.notes_visible = visible
-        self.center.setVisible(visible)
-        if not self._ready:
-            return
-        if visible:
+        if visible and part == "notes":
             self.notes.edit.setFocus()
-        else:
-            shortcut = self.notes_action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
-            self.statusBar().showMessage(
-                f"“Notes” closed — reopen it any time from ▦ Panels (top right) or {shortcut}.", 10000
-            )
+        elif not visible and not self.workbench.wanted[part]:  # not when it only stepped aside for room
+            shortcut = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+            self.statusBar().showMessage(f"“{action.text()}” hidden — bring it back from View or with {shortcut}.", 10000)
 
     def _default_layout(self) -> None:
-        d = self.docks
-        ready, self._ready = self._ready, False  # no "panel closed" hints while rearranging
-        for dock in d.values():
-            dock.setFloating(False)
-            self.removeDockWidget(dock)  # drop old tab groups so the arrangement is rebuilt cleanly
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, d["workspace"])
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d["documents"])
-        for key in ("ai", "transcript", "recordings"):
-            self.tabifyDockWidget(d["documents"], d[key])
-        for dock in d.values():
-            dock.show()
-        d["documents"].raise_()
-        if ready:  # re-enable after Qt's queued show/hide events
-            QTimer.singleShot(0, lambda: setattr(self, "_ready", True))
-        # Dock sizes only stick once the window has its real size.
-        QTimer.singleShot(
-            0, lambda: self.resizeDocks([d["workspace"], d["documents"]], [250, 480], Qt.Orientation.Horizontal)
-        )
+        ready, self._ready = self._ready, False  # no "hidden" hints while rearranging
+        self.workbench.reset()
+        self._ready = ready
 
     def _build_menus(self) -> None:
         bar = self.menuBar()
@@ -289,8 +273,14 @@ class MainWindow(QMainWindow):
         add(tools, "Rebuild Search Index (Subject)", self._rebuild_index)
         add(tools, "Check Transcription Setup", self._check_whisper)
 
-        self.panels_menu.setTitle("&View")
-        bar.addMenu(self.panels_menu)
+        view = bar.addMenu("&View")
+        for action in self.part_actions.values():
+            view.addAction(action)
+        view.addSeparator()
+        for key in self.workbench.inspector.keys:
+            add(view, f"Show {self.workbench.inspector.titles[key]}", lambda _=False, k=key: self.workbench.show_pane(k))
+        view.addSeparator()
+        add(view, "Reset Layout", self._default_layout)
 
     def _connect(self) -> None:
         self.sidebar.lectureSelected.connect(self.open_lecture)
@@ -420,7 +410,7 @@ class MainWindow(QMainWindow):
         if event.type() not in DRAG_EVENTS or not isinstance(obj, QWidget):
             return False
         window = obj.window()
-        if window is not self and window not in self.docks.values():  # dialogs and floating docks of their own
+        if window is not self:  # dialogs of their own
             return False
         paths = dropped_files(event.mimeData())
         if not paths:
@@ -449,7 +439,7 @@ class MainWindow(QMainWindow):
         added = []  # (what, where)
         if audio:
             self.audio.import_files(audio)
-            self.docks["recordings"].show()
+            self.workbench.set_shown("inspector", True)
             added.append((f"{len(audio)} recording{'s' * (len(audio) != 1)}", f"{lecture.subject.name} › {lecture.name}"))
         for kind, files in pdfs.items():
             self.documents.import_paths(files, kind)
@@ -462,10 +452,9 @@ class MainWindow(QMainWindow):
                 where = subject.name
             added.append((f"{len(files)} × {DOC_TYPES[kind]}", where))
         if pdfs:
-            self.docks["documents"].show()
-            self.docks["documents"].raise_()
+            self.workbench.set_shown("documents", True)
         elif audio:
-            self.docks["recordings"].raise_()
+            self.workbench.show_pane("recordings")
         if added:
             self.statusBar().showMessage("Added " + "; ".join(f"{what} to {where}" for what, where in added) + ".", 8000)
 
@@ -657,8 +646,7 @@ class MainWindow(QMainWindow):
             else:
                 self._seek_from_notes(int(context["t"]))
         if context.get("doc") and context.get("pdf"):
-            self.docks["documents"].show()
-            self.docks["documents"].raise_()
+            self.workbench.set_shown("documents", True)
             if not self.documents.open_page(context["doc"], context["pdf"], context.get("page", 1)):
                 self.statusBar().showMessage(f"“{context['pdf']}” is no longer there.", 4000)
 
@@ -711,8 +699,7 @@ class MainWindow(QMainWindow):
             self.notes_action.setChecked(True)
 
     def _open_document_page(self, folder: str, pdf: str, page: int, label: str = "") -> None:
-        self.docks["documents"].show()
-        self.docks["documents"].raise_()
+        self.workbench.set_shown("documents", True)
         if not self.documents.open_page(folder, pdf, page):
             self.statusBar().showMessage(f"{label or pdf} is not in this lecture's documents.", 6000)
 
@@ -749,7 +736,7 @@ class MainWindow(QMainWindow):
             if self._is_open(lecture):
                 self.transcript.refresh(select_stem=audio_path.stem)
                 self.recordings.refresh()
-                self.docks["transcript"].raise_()
+                self.workbench.inspector.show_pane("transcript")
             if self.settings.local_classify:
                 self.classify(lecture, only=audio_path.stem, automatic=True)  # stage 3; re-indexes when done
             else:
@@ -921,7 +908,7 @@ class MainWindow(QMainWindow):
             self._seek_audio(name, value)
         else:
             self.documents.open_page(kind, name, int(value))
-            self.docks["documents"].raise_()
+            self.workbench.set_shown("documents", True)
 
     # --- professors ---------------------------------------------------------
 
@@ -944,7 +931,7 @@ class MainWindow(QMainWindow):
     # --- misc ---------------------------------------------------------------
 
     def _import_pdf(self) -> None:
-        self.docks["documents"].raise_()
+        self.workbench.set_shown("documents", True)
         self.documents.import_pdf()
 
     def _export_for_claude(self) -> None:
@@ -952,8 +939,7 @@ class MainWindow(QMainWindow):
         if self.subject is None:
             self.statusBar().showMessage("Pick a subject first.", 4000)
             return
-        self.docks["ai"].show()
-        self.docks["ai"].raise_()
+        self.workbench.show_pane("ai")
         self.ai.show_export()
         self.notes.save()
         self.ai.claude.export()
@@ -962,8 +948,7 @@ class MainWindow(QMainWindow):
         if self.subject is None:
             self.statusBar().showMessage("Pick a subject first.", 4000)
             return
-        self.docks["ai"].show()
-        self.docks["ai"].raise_()
+        self.workbench.show_pane("ai")
         self.ai.show_import()
 
     def _edit_exam(self, subject: Subject) -> None:
@@ -1040,8 +1025,8 @@ class MainWindow(QMainWindow):
     def _restore_state(self) -> None:
         if self.settings.window_geometry:
             self.restoreGeometry(QByteArray(base64.b64decode(self.settings.window_geometry)))
-        if self.settings.window_state:
-            self.restoreState(QByteArray(base64.b64decode(self.settings.window_state)), STATE_VERSION)
+        if self.settings.layout:
+            self.workbench.restore(self.settings.layout)
 
     def closeEvent(self, event) -> None:
         if self.audio.recording:
@@ -1068,7 +1053,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self.settings.window_geometry = base64.b64encode(bytes(self.saveGeometry())).decode()
-        self.settings.window_state = base64.b64encode(bytes(self.saveState(STATE_VERSION))).decode()
+        self.settings.layout = self.workbench.state()
         self.settings.last_subject = self.subject.name if self.subject else ""
         self.settings.last_lecture = self.lecture.name if self.lecture else ""
         self.settings.save()

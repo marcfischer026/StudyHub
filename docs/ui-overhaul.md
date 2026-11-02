@@ -14,21 +14,28 @@ reason; anything not listed here stays as it is.
 
 ## Layout
 
-Three columns in a `QSplitter` replace the floating docks:
+Three columns in a `QSplitter` (`universe/ui/workbench.py`) replace the floating docks:
 
 | Column | Content | Surface |
 |---|---|---|
-| Sidebar | Subjects → lectures, collapsible (⌘⌥S) | Glass (`sidebar` material) |
-| Center | Notes and PDF slides side by side; the split can be horizontal or vertical | Solid |
-| Inspector | Segmented control: Documents · Transcript · AI · Recordings · Practice | Solid, glass header |
+| Sidebar | Subjects → lectures (⌥⌘S) | Glass (`sidebar` material) |
+| Center | Notes (⌥⌘N) beside Documents: list + slide viewer (⌥⌘P) | Solid |
+| Inspector | Segmented control: Transcript · Recordings · AI Tutor (⌥⌘I) | Solid, glass header |
 
-- Toolbar: unified with the title bar (`setUnifiedTitleAndToolBarOnMac`), glass. From left:
-  sidebar toggle, breadcrumb, then **record button + timer + level meter, always visible**,
-  then mode switcher, Export / Import, inspector toggle.
+- Documents sit in the centre, not the inspector: slides are read next to the notes, so they
+  get centre space. Practice stays a tab inside AI Tutor for now.
+- Toolbar: unified with the title bar, glass. From left: sidebar toggle, **record button +
+  timer + level meter, always visible**, Timestamp, then (step 4) mode switcher, Export /
+  Import, inspector toggle. No breadcrumb: the window title already says where you are,
+  and the toolbar needs that room at half-screen width.
 - Status bar: glass, holds only the activity indicator and transient messages.
-- **Customisation, kept low-key:** right-clicking an inspector segment offers "Open in
-  center" (it replaces the slides) and "Move inspector to left". Splitter sizes are
-  remembered. No free docking, no floating windows.
+- **Narrow windows:** when the window is too narrow for every part you want (half a laptop
+  screen), parts step aside, the inspector first, then the sidebar, and come back when
+  there is room. The part you asked for last (e.g. AI Tutor via Export) always gets its
+  place. Parts you hid yourself stay hidden.
+- **Customisation, kept low-key:** divider positions, hidden parts and the inspector pane
+  are remembered (`settings.layout`). Right-click options ("Open in center", "Move
+  inspector to left") come with the modes in step 4. No free docking, no floating windows.
 
 ## Workspace modes
 
@@ -42,8 +49,8 @@ own splitter sizes and inspector tab.
 | Review | Notes | Transcript + player | Shown |
 | Exam | Notes | Practice / Claude | Shown |
 
-"Reset mode" puts back the preset. This replaces the current Panels menu and ⌘0–⌘5
-dock shortcuts (the shortcuts are reassigned).
+"Reset mode" puts back the preset. The Panels menu and ⌘0–⌘5 dock shortcuts are gone since step 2; showing and hiding
+parts lives in View, with the ⌥⌘ shortcuts above.
 
 ## Glass
 

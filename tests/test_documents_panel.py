@@ -339,10 +339,10 @@ class MainWindowTests(unittest.TestCase):
         self.exam = make_pdf(self.subject.dir("exams") / "Klausur.pdf", pages=4)
         self.window.sidebar.refresh(select=self.lecture)
 
-    def test_one_tab_instead_of_three(self):
-        self.assertIn("documents", self.window.docks)
-        for gone in ("slides", "exams", "exercises"):
-            self.assertNotIn(gone, self.window.docks)
+    def test_one_documents_part_beside_the_notes(self):
+        bench = self.window.workbench
+        self.assertIs(bench.parts["documents"], self.window.documents)
+        self.assertIs(bench.center.widget(1), self.window.documents)
 
     def test_lecture_switch_keeps_an_open_subject_document_and_swaps_the_slides(self):
         panel = self.window.documents

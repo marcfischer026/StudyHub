@@ -105,9 +105,8 @@ class Settings:
     api_key: str = ""  # UNIVERSE_API_KEY wins over this
     api_model: str = ""
     embedding_model: str = "all-MiniLM-L6-v2"  # used only if sentence-transformers is installed
-    window_state: str = ""  # base64 QMainWindow state
     window_geometry: str = ""
-    notes_visible: bool = True  # the central notes area isn't a dock, so saveState doesn't cover it
+    layout: dict = field(default_factory=dict)  # Workbench.state(): divider positions, shown parts, inspector pane
     last_subject: str = ""
     last_lecture: str = ""
     settings_version: int = 2

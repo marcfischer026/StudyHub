@@ -5,7 +5,7 @@
   on the fly if none is open.
 * :class:`PlayerBar` — playback under the notes, so timestamps and audio sit
   together.
-* :class:`RecordingsPanel` — the "Recordings" dock: file list, import,
+* :class:`RecordingsPanel` — the "Recordings" pane: file list, import,
   transcription, auto-transcribe.
 """
 

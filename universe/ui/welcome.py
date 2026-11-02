@@ -243,7 +243,7 @@ class LectureView(QWidget):
         close = QPushButton("✕")
         close.setFlat(True)
         close.setFixedWidth(28)
-        close.setToolTip("Hide notes — reopen from ▦ Panels")
+        close.setToolTip("Hide notes — bring them back from View → Notes (⌥⌘N)")
         close.clicked.connect(self.closeRequested)
         top = QHBoxLayout()
         top.addLayout(header, 1)

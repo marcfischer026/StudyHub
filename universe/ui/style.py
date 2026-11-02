@@ -45,6 +45,7 @@ class Tokens:
     card: str
     border: str
     hover: str
+    separator: str  # opaque hairline: the window behind may be see-through
     mono: str  # font family for times and timestamps
 
     def accent_tint(self, alpha: int) -> QColor:
@@ -86,6 +87,7 @@ def tokens(dark: bool | None = None) -> Tokens:
             card="rgba(255,255,255,0.05)",
             border="rgba(255,255,255,0.12)",
             hover="rgba(255,255,255,0.08)",
+            separator="#3A3A3C",
             mono=mono,
         )
     return Tokens(
@@ -98,6 +100,7 @@ def tokens(dark: bool | None = None) -> Tokens:
         card="rgba(0,0,0,0.035)",
         border="rgba(0,0,0,0.12)",
         hover="rgba(0,0,0,0.06)",
+        separator="#D5D5D7",
         mono=mono,
     )
 
@@ -106,7 +109,6 @@ def stylesheet(t: Tokens | None = None) -> str:
     t = t or tokens()
     s, m, l = RADIUS_S, RADIUS_M, RADIUS_L
     return f"""
-    QMainWindow::separator {{ width: 1px; height: 1px; background: {t.border}; }}
     QWidget[glassRole="sidebar"], QWidget[glassRole="toolbar"],
     QWidget[glassRole="header"], QWidget[glassRole="status"] {{ background: transparent; }}
 
@@ -120,9 +122,15 @@ def stylesheet(t: Tokens | None = None) -> str:
     QToolBar#formatBar QToolButton:hover {{ background: {t.hover}; }}
     QToolBar#formatBar QToolButton:checked {{ background: {t.accent_fill}; color: white; }}
 
-    QDockWidget {{ font-weight: 600; }}
-    QDockWidget::title {{ padding: 8px; text-align: left; }}
-    QDockWidget > QWidget {{ font-weight: normal; }}
+    QSplitter#workbench::handle, QSplitter#centerSplit::handle {{ background: {t.separator}; }}
+    QWidget#inspectorHeader {{ border-bottom: 1px solid {t.separator}; }}
+    QToolButton#segment {{ border: none; border-radius: {s}px; padding: 4px 8px; }}
+    QToolButton#segment:hover {{ background: {t.hover}; }}
+    QToolButton#segment:checked {{ background: {t.hover}; color: {t.accent}; font-weight: 600; }}
+    QToolButton#chromeToggle, QToolButton#chromeToggle:checked {{
+        border: none; border-radius: {s}px; padding: 4px; background: transparent;
+    }}
+    QToolButton#chromeToggle:hover {{ background: {t.hover}; }}
     QTabBar::tab {{ padding: 4px 12px; }}
 
     QPushButton#recordButton {{
@@ -145,10 +153,7 @@ def stylesheet(t: Tokens | None = None) -> str:
     QLabel#recordTime {{ font-family: "{t.mono}"; font-size: 14px; font-weight: 600; color: {RECORD}; }}
     QProgressBar#levelMeter {{ border: none; border-radius: {s}px; background: {t.border}; }}
     QProgressBar#levelMeter::chunk {{ border-radius: {s}px; background: #30A46C; }}
-    QToolButton#panelsButton {{ padding: 4px 12px; border: 1px solid {t.border}; border-radius: {m}px; }}
-    QToolButton#panelsButton::menu-indicator {{ image: none; width: 0px; }}
     QToolButton#micButton {{ font-size: 15px; padding: 2px 4px; }}
-    QLabel#breadcrumb {{ font-weight: 600; padding: 0 8px; }}
 
     QLabel#muted {{ color: {t.muted}; }}
     QLabel#welcomeTitle {{ font-size: 28px; font-weight: 700; }}
