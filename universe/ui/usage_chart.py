@@ -1,16 +1,14 @@
-"""Live CPU, GPU and memory use for the activity popup, drawn like a trading terminal.
+"""Live CPU, GPU and memory use for the activity popup: quotes and a two-minute chart.
 
-A black panel in both themes (a deliberate exception to the system palette:
-it reads as an instrument, like a market display), monospace throughout, hard
-1-pixel lines with no anti-aliasing, step lines between readings, the
-current value tagged on the scale, and each readout with its change over the
-last minute and the high, low and average of the window.
+Laid out like a market display, in the app's own colours: a crisp 1-pixel
+grid, smooth lines for CPU, GPU and memory, the current values tagged on the
+scale, and each quote with its change over the last minute and the high, low
+and average of the window.
 
 The chart is drawn against the clock, not per sample, so it glides left
 between the two-second readings and a pause in sampling shows as a gap
-instead of a jump. A readout flashes green or red for a moment when its
-value ticks up or down. With "Reduce motion" on, nothing moves or flashes;
-values simply update on each reading.
+instead of a jump. The numbers ease to each new reading. With "Reduce
+motion" on, nothing moves; values simply update on each reading.
 """
 
 from __future__ import annotations
@@ -30,22 +28,49 @@ WINDOW = 120.0  # seconds of history on screen
 GAP = 6.0  # seconds without a reading that break the line (sampling pauses while idle)
 FPS = 30
 EASE = 0.3  # share of the remaining distance a readout covers per frame
-FLASH = 0.7  # seconds a tick flash takes to fade
-TICK = 0.5  # percentage points a value must move to flash
 
-# The terminal palette: fixed, not themed.
-BG = QColor("#050505")
-PANEL = QColor("#0E0E0E")
-GRID = QColor("#1E1E1E")
-FRAME = QColor("#3A3A3A")
-AMBER = QColor("#FF9F1C")  # labels and the header, as on a market terminal
-TEXT = QColor("#EDEDED")
-DIM = QColor("#7C7C7C")
-UP = QColor("#00C46A")
-DOWN = QColor("#FF3B3B")
-SERIES = {"cpu": QColor("#FFB000"), "gpu": QColor("#00B7E8"), "ram": QColor("#B0B0B0")}
+# GPU is the second series: teal, apart from the blue accent in hue and lightness
+# and outside the state colours (red/amber/green).
+GPU_LIGHT, GPU_DARK = "#1F7A72", "#4FB3A9"
+# Memory is the third: a warm ochre, apart from both in hue.
+RAM_LIGHT, RAM_DARK = "#9A6A2F", "#D4A266"
 
-HEADER_H, QUOTE_H, PLOT_H = 18, 62, 122
+
+@dataclass
+class Palette:
+    panel: QColor
+    grid: QColor
+    frame: QColor
+    text: QColor
+    dim: QColor
+    on_fill: QColor  # text on a filled tag
+    hover: QColor
+    up: QColor
+    down: QColor
+    series: dict
+
+
+def palette() -> Palette:
+    """The app's own tokens, so the panel sits in the window like the rest of it."""
+    t = style.tokens()
+    grid = style.qcolor(t.border)
+    grid.setAlpha(grid.alpha() // 2)
+    return Palette(
+        panel=style.qcolor(t.card),
+        grid=grid,
+        frame=style.qcolor(t.separator),
+        text=style.qcolor(t.text),
+        dim=style.qcolor(t.muted),
+        on_fill=QColor("#FFFFFF"),
+        hover=style.qcolor(t.raised),
+        # The state colours are tuned for light backgrounds; on dark they need to be brighter.
+        up=QColor("#3FB950" if t.dark else style.SUCCESS),
+        down=QColor("#F85149" if t.dark else style.DANGER),
+        series={"cpu": style.qcolor(t.accent), "gpu": QColor(GPU_DARK if t.dark else GPU_LIGHT), "ram": QColor(RAM_DARK if t.dark else RAM_LIGHT)},
+    )
+
+
+QUOTE_H, PLOT_H = 62, 122
 
 
 @dataclass
@@ -77,7 +102,6 @@ class UsageChart(QWidget):
         self.history = history
         self.snapshot = Snapshot()
         self.shown = {"cpu": 0.0, "gpu": 0.0, "ram": 0.0}  # what the readouts show while easing
-        self.flash: dict[str, tuple[float, QColor]] = {}  # key → (when, green or red)
         self.hover_x: float | None = None
         self.setMouseTracking(True)
         self.setFixedHeight(self._height())
@@ -86,7 +110,7 @@ class UsageChart(QWidget):
 
     @staticmethod
     def _height() -> int:
-        return HEADER_H + QUOTE_H + PLOT_H
+        return QUOTE_H + PLOT_H
 
     def sizeHint(self):
         size = super().sizeHint()
@@ -99,16 +123,10 @@ class UsageChart(QWidget):
             tips.append(f"GPU: {snap.gpu_mem_gb:.1f} GB of memory held by the GPU (loaded models)")
         if snap.ram_total_gb:
             tips.append(f"Memory: share of {snap.ram_total_gb:.0f} GB in use")
-        tips.append("Δ1M: change over the last minute · H/L/AVG: over the two minutes shown")
+        tips.append("▲▼: change over the last minute · H, L, Ø: high, low and average of the two minutes shown")
         self.setToolTip("\n".join(tips))
-        before = self._targets()
         self.snapshot = snap  # the readouts count up from zero when the popup opens
-        if motion.enabled():
-            now = time.monotonic()
-            for key, value in self._targets().items():
-                if before[key] and abs(value - before[key]) >= TICK:
-                    self.flash[key] = (now, UP if value > before[key] else DOWN)
-        else:
+        if not motion.enabled():
             self._settle()
         self.update()
 
@@ -146,87 +164,63 @@ class UsageChart(QWidget):
     # --- painting -------------------------------------------------------------
 
     def _plot_rect(self) -> QRectF:
-        return QRectF(0, HEADER_H + QUOTE_H, self.width(), PLOT_H)
+        return QRectF(0, QUOTE_H, self.width(), PLOT_H)
 
     def _fonts(self) -> tuple[QFont, QFont, QFont]:
         family = style.tokens().mono
         base = self.font().pointSizeF()
-        small, value, label = QFont(family), QFont(family), QFont(family)
+        small, value, label = QFont(family), QFont(family), QFont(self.font())
         small.setPointSizeF(base - 3)
-        label.setPointSizeF(base - 2.5)
-        label.setWeight(QFont.Weight.Bold)
+        label.setPointSizeF(base - 1.5)
+        label.setWeight(QFont.Weight.DemiBold)
         value.setPointSizeF(base + 7)
         value.setWeight(QFont.Weight.DemiBold)
         return small, label, value
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)  # no anti-aliasing: every line lands on whole pixels
-        painter.fillRect(self.rect(), BG)
+        self.p = palette()
         small, label, value = self._fonts()
         now = time.monotonic()
         readings = [r for r in self.history.readings if now - r.t <= WINDOW + GAP]
-        self._paint_header(painter, small, label, readings)
         self._paint_quotes(painter, small, label, value, readings, now)
         self._paint_plot(painter, small, readings, now)
-        painter.setPen(QPen(FRAME, 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
-
-    def _paint_header(self, painter: QPainter, small: QFont, label: QFont, readings) -> None:
-        bar = QRectF(0, 0, self.width(), HEADER_H)
-        painter.fillRect(bar, AMBER)
-        painter.setFont(label)
-        painter.setPen(BG)
-        painter.drawText(bar.adjusted(6, 0, -6, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "SYS LOAD  ·  LOCAL AI")
-        live = bool(readings) and time.monotonic() - readings[-1].t <= GAP
-        painter.drawText(
-            bar.adjusted(6, 0, -6, 0),
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            ("■ LIVE" if live else "□ IDLE") + "  2M  2S",
-        )
 
     def _paint_quotes(self, painter: QPainter, small: QFont, label: QFont, value: QFont, readings, now: float) -> None:
         snap = self.snapshot
         notes = {
-            "cpu": "ALL CORES",
-            "gpu": f"{snap.gpu_mem_gb:.1f}GB VRAM" if snap.gpu_mem_gb is not None else "APPLE GPU",
-            "ram": f"OF {snap.ram_total_gb:.0f}GB" if snap.ram_total_gb else "",
+            "cpu": "",
+            "gpu": f"{snap.gpu_mem_gb:.1f} GB" if snap.gpu_mem_gb is not None else "",
+            "ram": f"{snap.ram_total_gb:.0f} GB" if snap.ram_total_gb else "",
         }
         known = {"cpu": snap.cpu is not None, "gpu": snap.gpu is not None, "ram": snap.ram_used is not None}
         width = self.width() / 3
-        top = HEADER_H
-        for i, (key, name) in enumerate((("cpu", "CPU"), ("gpu", "GPU"), ("ram", "MEM"))):
+        top = 0
+        for i, (key, name) in enumerate((("cpu", "CPU"), ("gpu", "GPU"), ("ram", "Memory"))):
             cell = QRectF(i * width, top, width, QUOTE_H)
             if i:
-                painter.setPen(QPen(FRAME, 1))
+                painter.setPen(QPen(self.p.frame, 1))
                 painter.drawLine(int(cell.left()), int(cell.top()), int(cell.left()), int(cell.bottom()) - 1)
-            when_colour = self.flash.get(key)
-            if when_colour is not None:
-                age = now - when_colour[0]
-                if age < FLASH:
-                    tint = QColor(when_colour[1])
-                    tint.setAlpha(int(90 * (1 - age / FLASH)))
-                    painter.fillRect(cell.adjusted(1, 1, 0, 0), tint)
-            inner = cell.adjusted(8, 4, -8, -4)
+            inner = cell.adjusted(0 if i == 0 else 10, 4, -10 if i < 2 else 0, -6)  # flush with the text above
             # Ticker line: colour key, name, note.
-            painter.fillRect(QRectF(inner.left(), inner.top() + 3, 6, 6), SERIES[key])
+            painter.fillRect(QRectF(inner.left(), inner.top() + 3, 6, 6), self.p.series[key])
             painter.setFont(label)
-            painter.setPen(AMBER)
+            painter.setPen(self.p.dim)
             painter.drawText(inner.adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, name)
             painter.setFont(small)
-            painter.setPen(DIM)
+            painter.setPen(self.p.dim)
             painter.drawText(inner, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, notes[key])
             # Last value, then the change over the last minute.
             painter.setFont(value)
             metrics = QFontMetricsF(value)
             baseline = inner.top() + 14 + metrics.ascent()
-            painter.setPen(TEXT)
+            painter.setPen(self.p.text)
             text = f"{self.shown[key]:5.1f}" if known[key] else "  —"
             painter.drawText(QPointF(inner.left(), baseline), text.strip())
             change = _change(readings, key, now)
             if change is not None and known[key]:
                 arrow = "▲" if change > 0.05 else "▼" if change < -0.05 else "■"
-                colour = UP if change > 0.05 else DOWN if change < -0.05 else DIM
+                colour = self.p.up if change > 0.05 else self.p.down if change < -0.05 else self.p.dim
                 painter.setFont(small)
                 painter.setPen(colour)
                 painter.drawText(
@@ -237,16 +231,16 @@ class UsageChart(QWidget):
             # Range of the window: high, low, average.
             stats = _stats(readings, key)
             painter.setFont(small)
-            painter.setPen(DIM)
-            line = f"H{stats[0]:3.0f} L{stats[1]:3.0f} AVG{stats[2]:3.0f}" if stats else "H  — L  — AVG  —"
+            painter.setPen(self.p.dim)
+            line = f"H {stats[0]:.0f}  L {stats[1]:.0f}  Ø {stats[2]:.0f}" if stats else "H –  L –  Ø –"
             painter.drawText(inner, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, line)
-        painter.setPen(QPen(FRAME, 1))
+        painter.setPen(QPen(self.p.frame, 1))
         y = int(top + QUOTE_H) - 1
         painter.drawLine(0, y, self.width(), y)
 
     def _paint_plot(self, painter: QPainter, small: QFont, readings, now: float) -> None:
         plot = self._plot_rect()
-        painter.fillRect(plot.adjusted(1, 0, -1, -1), PANEL)
+        painter.fillRect(plot, self.p.panel)
         painter.setFont(small)
         metrics = QFontMetricsF(small)
         gutter = metrics.horizontalAdvance("100.0") + 10
@@ -261,15 +255,15 @@ class UsageChart(QWidget):
 
         # Grid: every 10 % faint, every 50 % stronger; vertical every 30 s.
         for level in range(0, 101, 10):
-            painter.setPen(QPen(FRAME if level % 50 == 0 else GRID, 1))
+            painter.setPen(QPen(self.p.frame if level % 50 == 0 else self.p.grid, 1))
             painter.drawLine(left, y_of(level), right, y_of(level))
         for seconds in range(0, int(WINDOW) + 1, 30):
             x = round(right - seconds / WINDOW * (right - left))
-            painter.setPen(QPen(GRID, 1))
+            painter.setPen(QPen(self.p.grid, 1))
             painter.drawLine(x, top, x, bottom)
-            painter.setPen(QPen(FRAME, 1))
+            painter.setPen(QPen(self.p.frame, 1))
             painter.drawLine(x, bottom, x, bottom + 3)
-            text = "NOW" if seconds == 0 else f"-{seconds // 60}:{seconds % 60:02d}"
+            text = "now" if seconds == 0 else f"-{seconds // 60}:{seconds % 60:02d}"
             box = QRectF(x - 30, bottom + 4, 60, metrics.height())
             align = Qt.AlignmentFlag.AlignHCenter
             if seconds == 0:
@@ -278,13 +272,13 @@ class UsageChart(QWidget):
             elif seconds == int(WINDOW):
                 box.moveLeft(x)
                 align = Qt.AlignmentFlag.AlignLeft
-            painter.setPen(DIM)
+            painter.setPen(self.p.dim)
             painter.drawText(box, align | Qt.AlignmentFlag.AlignTop, text)
         # The scale: a ruled axis on the right.
-        painter.setPen(QPen(FRAME, 1))
+        painter.setPen(QPen(self.p.frame, 1))
         painter.drawLine(right, top, right, bottom)
         for level in (0, 50, 100):
-            painter.setPen(DIM)
+            painter.setPen(self.p.dim)
             painter.drawText(
                 QRectF(right + 4, y_of(level) - metrics.height() / 2, gutter - 6, metrics.height()),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -292,31 +286,38 @@ class UsageChart(QWidget):
             )
 
         if not readings:
-            painter.setPen(AMBER)
-            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "AWAITING DATA")
+            painter.setPen(self.p.dim)
+            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Measuring…")
             return
 
+        # The lines themselves are smooth: anti-aliased, at sub-pixel positions, so they glide.
+        def point(r: Reading, key: str) -> QPointF:
+            value = max(0.0, min(getattr(r, key), 100.0))
+            return QPointF(right - (now - r.t) / WINDOW * (right - left), bottom - (bottom - top) * value / 100)
+
         painter.save()
-        painter.setClipRect(QRectF(left, top - 1, right - left, bottom - top + 2))
-        for key in ("gpu", "cpu"):  # CPU on top
-            painter.setPen(QPen(SERIES[key], 1))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipRect(QRectF(left, top - 2, right - left, bottom - top + 4))
+        for key in ("ram", "gpu", "cpu"):  # CPU on top
+            pen = QPen(self.p.series[key], 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
             for run in _runs(readings, key):
-                painter.drawPath(_steps([QPointF(x_of(r), y_of(getattr(r, key))) for r in run]))
+                painter.drawPath(_smooth([point(r, key) for r in run]))
         painter.restore()
 
         # Last value tagged on the scale, like a price label; the later tag yields if they collide.
         taken: list[float] = []
-        for key in ("cpu", "gpu"):
+        for key in ("cpu", "gpu", "ram"):
             last = next((r for r in reversed(readings) if getattr(r, key) is not None), None)
             if last is None:
                 continue
             y = y_of(getattr(last, key))
-            if any(abs(y - other) < metrics.height() for other in taken):
-                y = max(taken) + metrics.height() + 1 if y >= max(taken) else min(taken) - metrics.height() - 1
+            while any(abs(y - other) < metrics.height() + 1 for other in taken):
+                y += metrics.height() + 1 if y >= sum(taken) / len(taken) else -(metrics.height() + 1)
             taken.append(y)
             tag = QRectF(right + 1, y - metrics.height() / 2, gutter - 2, metrics.height())
-            painter.fillRect(tag, SERIES[key])
-            painter.setPen(BG)
+            painter.fillRect(tag, self.p.series[key])
+            painter.setPen(self.p.on_fill)
             painter.drawText(tag, Qt.AlignmentFlag.AlignCenter, f"{getattr(last, key):.1f}")
 
         if self.hover_x is not None:
@@ -329,28 +330,29 @@ class UsageChart(QWidget):
         if abs(x - self.hover_x) > 12:
             return
         y = y_of(nearest.cpu)
-        painter.setPen(QPen(DIM, 1, Qt.PenStyle.DashLine))
+        painter.setPen(QPen(self.p.dim, 1, Qt.PenStyle.DashLine))
         painter.drawLine(x, top, x, bottom)
         painter.drawLine(left, y, right, y)
-        for key in ("cpu", "gpu"):
+        for key in ("cpu", "gpu", "ram"):
             value = getattr(nearest, key)
             if value is not None:
-                painter.fillRect(QRectF(x - 2, y_of(value) - 2, 5, 5), SERIES[key])
+                painter.fillRect(QRectF(x - 2, y_of(value) - 2, 5, 5), self.p.series[key])
         # Readout box at the top, and the time on the axis below the line.
         ago = int(now - nearest.t)
         gpu = f"{nearest.gpu:5.1f}" if nearest.gpu is not None else "    —"
-        text = f"CPU {nearest.cpu:5.1f}  GPU {gpu}"
+        ram = f"{nearest.ram:.1f}" if nearest.ram is not None else "—"
+        text = f"CPU {nearest.cpu:.1f}  GPU {gpu.strip()}  MEM {ram}"
         box = QRectF(0, top, metrics.horizontalAdvance(text) + 10, metrics.height() + 4)
         box.moveLeft(x + 4 if x + 4 + box.width() <= right else x - 4 - box.width())
-        painter.fillRect(box, BG)
-        painter.setPen(QPen(AMBER, 1))
+        painter.fillRect(box, self.p.hover)
+        painter.setPen(QPen(self.p.frame, 1))
         painter.drawRect(box.adjusted(0, 0, -1, -1))
-        painter.setPen(TEXT)
+        painter.setPen(self.p.text)
         painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
         stamp = f"-{ago // 60}:{ago % 60:02d}"
         tag = QRectF(x - 22, bottom + 3, 44, metrics.height() + 1)
-        painter.fillRect(tag, AMBER)
-        painter.setPen(BG)
+        painter.fillRect(tag, self.p.series["cpu"])
+        painter.setPen(self.p.on_fill)
         painter.drawText(tag, Qt.AlignmentFlag.AlignCenter, stamp)
 
 
@@ -369,14 +371,16 @@ def _runs(readings: list[Reading], key: str) -> list[list[Reading]]:
     return runs
 
 
-def _steps(points: list[QPointF]) -> QPainterPath:
-    """A step line: each reading holds until the next one, as a tick chart draws it."""
+def _smooth(points: list[QPointF]) -> QPainterPath:
+    """A gentle curve through the readings (midpoint quadratics) instead of corners."""
     path = QPainterPath(points[0])
-    for point in points[1:]:
-        path.lineTo(point.x(), path.currentPosition().y())
-        path.lineTo(point)
     if len(points) == 1:
-        path.lineTo(points[0] + QPointF(2, 0))
+        path.lineTo(points[0] + QPointF(1, 0))
+        return path
+    path.lineTo((points[0] + points[1]) / 2)
+    for corner, after in zip(points[1:-1], points[2:]):
+        path.quadTo(corner, (corner + after) / 2)
+    path.lineTo(points[-1])
     return path
 
 

@@ -374,15 +374,15 @@ class ActivityIndicator(QWidget):
             self.popup.close()
             return
         self.popup = ActivityPopup(self)
-        self.popup.adjustSize()
+        self._sample(detailed=True)  # full readings before it shows, so it opens at its final size
+        self.popup.refresh()
         anchor = self.mapToGlobal(QPoint(self.width(), 0))
         self.popup.move(anchor.x() - self.popup.width(), anchor.y() - self.popup.height() - 6)
         self.popup.show()
-        self._sample()  # full readings now, not up to two seconds later
 
-    def _sample(self) -> None:
+    def _sample(self, detailed: bool = False) -> None:
         busy = self.jobs.busy
-        detailed = busy or bool(self.popup and self.popup.isVisible())
+        detailed = detailed or busy or bool(self.popup and self.popup.isVisible())
         self.snapshot = self.monitor.snapshot(with_gpu=detailed) if detailed else self._battery_only()
         self.history.add(self.snapshot)
         self._apply_battery_rules()
@@ -629,10 +629,26 @@ class ActivityPopup(QFrame):
         ]
         self.history.setText("Recent: " + " · ".join(done) if done else "")
         self.history.setVisible(bool(done))
-        self.adjustSize()
-        # adjustSize settles on the height for the minimum width, which can be a line short
-        # of what the wrapped labels need; the size hint never is, so never go below it.
-        self.resize(self.width(), max(self.height(), self.sizeHint().height()))
+        self._fit()
+
+    def _fit(self) -> None:
+        """Resize only when the content needs another size, growing upwards from the status bar.
+
+        This runs on every reading; resizing a shown popup each time (even back to the same
+        size) makes the native window flicker. adjustSize alone settles a line short of what
+        the wrapped labels need, so the height comes from the layout at the actual width.
+        """
+        width = max(self.minimumWidth(), self.sizeHint().width())
+        height = self.layout().totalHeightForWidth(width)  # wrapped labels at the real width
+        if height < 0:  # no height-for-width in the layout
+            height = self.sizeHint().height()
+        if (width, height) == (self.width(), self.height()):
+            return
+        if self.isVisible():
+            bottom_right = self.geometry().bottomRight()
+            self.setGeometry(bottom_right.x() - width + 1, bottom_right.y() - height + 1, width, height)
+        else:
+            self.resize(width, height)
 
 
 def _muted(text: str) -> QLabel:
