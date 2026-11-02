@@ -160,7 +160,7 @@ def stylesheet(t: Tokens | None = None) -> str:
     QLabel#recordTime {{ font-family: "{t.mono}"; font-size: 14px; font-weight: 600; color: {RECORD}; }}
     QProgressBar#levelMeter {{ border: none; border-radius: {s}px; background: {t.border}; }}
     QProgressBar#levelMeter::chunk {{ border-radius: {s}px; background: #30A46C; }}
-    QToolButton#micButton {{ font-size: 15px; padding: 2px 4px; }}
+    QToolButton#micButton {{ padding: 4px; }}
 
     QLabel#muted {{ color: {t.muted}; }}
     QLabel#welcomeTitle {{ font-size: 28px; font-weight: 700; }}
@@ -194,7 +194,7 @@ def stylesheet(t: Tokens | None = None) -> str:
     QListWidget#documentList::item:selected {{ background: {t.hover}; border: 1px solid {t.accent}; }}
     QLabel#slidePage {{ background: white; border: 1px solid {t.border}; }}
     QWidget#playerBar {{ border-top: 1px solid {t.border}; }}
-    QToolButton#playButton {{ font-size: 14px; min-width: 26px; }}
+    QToolButton#playButton {{ min-width: 26px; }}
     QLabel#practiceHeader, QLabel#planLabel {{ font-weight: 600; }}
     QLabel#practiceStem {{ font-size: 15px; font-weight: 600; }}
     """

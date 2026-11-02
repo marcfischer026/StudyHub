@@ -23,7 +23,7 @@ from ..professors import ProfessorStore
 from ..services import moodle_ical, practice
 from ..services.study_store import StudyStore
 from ..storage import Lecture, Subject, Workspace
-from . import icons, style
+from . import icons
 from .audio import PlayerBar
 from .claude_panel import exam_date
 from .note_editor import NoteEditor
@@ -32,18 +32,15 @@ ROLE = Qt.ItemDataRole.UserRole
 DEADLINES_SHOWN = 8
 
 
-def _card(title: str, body: str) -> QFrame:
-    frame = QFrame()
-    frame.setObjectName("card")
-    layout = QVBoxLayout(frame)
-    heading = QLabel(title)
-    heading.setObjectName("cardTitle")
-    text = QLabel(body, wordWrap=True)
-    text.setObjectName("muted")
-    layout.addWidget(heading)
-    layout.addWidget(text)
-    layout.addStretch()
-    return frame
+STACK_BUTTONS_BELOW = 380  # page width at which the two buttons go one under the other
+FIRST_STEPS = (
+    "<ol style='margin-left: -24px'>"
+    "<li><b>Create a subject</b>, one per course, e.g. Corporate Finance.</li>"
+    "<li><b>Record the lecture.</b> Notes taken with ⌘T get timestamps that replay the audio.</li>"
+    "<li><b>Study with Claude:</b> export, paste the reply back, and practise with quizzes "
+    "tailored to your professor.</li>"
+    "</ol>"
+)
 
 
 class WelcomePage(QWidget):
@@ -65,14 +62,8 @@ class WelcomePage(QWidget):
         self.readiness = QLabel(wordWrap=True)
         self.readiness.hide()
 
-        self.steps = QWidget()
-        self.steps.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        steps = self._steps = QBoxLayout(QBoxLayout.Direction.LeftToRight, self.steps)  # stacked when narrow
-        steps.setContentsMargins(0, 0, 0, 0)
-        steps.setSpacing(12)
-        steps.addWidget(_card("1 · Create a subject", "One per course — Corporate Finance, Physics, anything."))
-        steps.addWidget(_card("2 · Record the lecture", "Press Record. Notes with ⌘T get timestamps that replay the audio."))
-        steps.addWidget(_card("3 · Study with Claude", "Export for Claude, paste the reply back, get quizzes tailored to your professor."))
+        # First run: three steps as a short list, not three boxes.
+        self.steps = QLabel(FIRST_STEPS, textFormat=Qt.TextFormat.RichText, wordWrap=True)
 
         self.events: list[moodle_ical.Event] = []
         self.deadlines = QFrame()
@@ -89,27 +80,25 @@ class WelcomePage(QWidget):
         self.lectures.setObjectName("lectureList")
         self.lectures.itemClicked.connect(lambda item: self.openLecture.emit(item.data(ROLE)))
 
-        self.primary = QPushButton()
+        self.primary = QPushButton(icon=icons.icon("plus", "white"))
         self.primary.setObjectName("primaryButton")
         self.primary.clicked.connect(self._primary_clicked)
         self.record = QPushButton("Start recording now")
-        self.record.setIcon(icons.dot(style.RECORD))
+        self.record.setIcon(icons.dot("white"))
         self.record.setObjectName("recordButton")
         self.record.clicked.connect(self.quickRecord)
 
-        buttons = self._buttons = QBoxLayout(QBoxLayout.Direction.LeftToRight)  # stacked when narrow
-        buttons.addWidget(self.primary)
-        buttons.addWidget(self.record)
+        buttons = self._buttons = QBoxLayout(QBoxLayout.Direction.LeftToRight)  # stacked when very narrow
+        buttons.addWidget(self.primary, 0, Qt.AlignmentFlag.AlignLeft)  # natural width, never a full-width bar
+        buttons.addWidget(self.record, 0, Qt.AlignmentFlag.AlignLeft)
         buttons.addStretch()
 
         column = QVBoxLayout()
-        column.setSpacing(14)
+        column.setSpacing(16)
         column.addWidget(self.title)
         column.addWidget(self.subtitle)
         column.addWidget(self.readiness)
-        column.addSpacing(6)
         column.addLayout(buttons)
-        column.addSpacing(10)
         column.addWidget(self.steps)
         column.addWidget(self.deadlines)
         column.addWidget(self.lectures, 1)
@@ -129,9 +118,8 @@ class WelcomePage(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        narrow = event.size().width() < 640
-        for row in (self._steps, self._buttons):
-            row.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
+        narrow = event.size().width() < STACK_BUTTONS_BELOW
+        self._buttons.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
 
     def set_events(self, events: list[moodle_ical.Event]) -> None:
         """Moodle calendar events; the page shows the upcoming ones that fit the current view."""
@@ -163,15 +151,14 @@ class WelcomePage(QWidget):
         has_subjects = bool(self.workspace.subjects())
         self.lectures.clear()
         if subject is None:
-            self.title.setText("Welcome to UniVerse")
             if has_subjects:
+                self.title.setText("UniVerse")
                 self.subtitle.setText("Pick a lecture in the sidebar — or just start recording; UniVerse files it for you.")
-                self.primary.setText("+  New subject")
+                self.primary.setText("New subject")
             else:
-                self.subtitle.setText(
-                    "Your offline study space: record lectures, take timestamped notes, and turn it all into exam practice."
-                )
-                self.primary.setText("+  Create your first subject")
+                self.title.setText("Start with a subject")
+                self.subtitle.setText("Recordings, notes and slides stay on this Mac, sorted by course and lecture.")
+                self.primary.setText("Create a subject")
             self.steps.setVisible(not has_subjects)
             self.lectures.hide()
             return
@@ -183,7 +170,7 @@ class WelcomePage(QWidget):
             if lectures
             else "No lectures yet. Press Start recording now when class begins — or create an empty lecture first."
         )
-        self.primary.setText("+  New lecture")
+        self.primary.setText("New lecture")
         self.steps.hide()
         for lecture in reversed(lectures):
             n_audio = len(lecture.audio_files())

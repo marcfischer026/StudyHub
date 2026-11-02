@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 
 from ..services.pdf_tools import needs_password, unlock
 from ..storage import DOC_TYPES, TAG_PALETTE, Document, Lecture, Subject, import_file
-from . import icons
+from . import icons, style
 from .pdf_viewer import PdfViewer
 
 EMPTY_TEXT = "No documents yet.\n\nClick “Import PDF…” or drag a PDF file here."
@@ -49,6 +49,19 @@ IMPORT_CHOICES = {
     "Past exam (whole subject)": "exams",
     "Task (whole subject)": "exercises",
 }
+
+
+class _Elided(QLabel):
+    """One line that shortens with "…" when the row is narrow, instead of being cut off."""
+
+    def __init__(self, text: str, mode: Qt.TextElideMode = Qt.TextElideMode.ElideRight):
+        super().__init__(text)
+        self.full, self.mode = text, mode
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def resizeEvent(self, event) -> None:
+        self.setText(self.fontMetrics().elidedText(self.full, self.mode, event.size().width()))
+        super().resizeEvent(event)
 
 
 def _text_on(color: str) -> str:
@@ -295,23 +308,21 @@ class DocumentsPanel(QWidget):
     def _row(self, doc: Document, colors: dict[str, str]) -> QWidget:
         row = QWidget()
         row.setToolTip(f"{doc.path.name}\n{doc.lecture or 'Whole subject'}\nTags: {', '.join(doc.tags) or 'none'}")
-        name = QLabel(doc.path.name)
-        name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        name = _Elided(doc.path.name, Qt.TextElideMode.ElideMiddle)  # keeps the end, e.g. "…_v3.pdf"
         chips = QHBoxLayout()
-        chips.setSpacing(3)
+        chips.setSpacing(4)
         for tag in doc.tags:
             chip = QLabel(tag)
             color = colors.get(tag, UNKNOWN_TAG_COLOR)
             chip.setStyleSheet(
-                f"background: {color}; color: {_text_on(color)}; border-radius: 7px; padding: 0 6px; font-size: 11px;"
+                f"background: {color}; color: {_text_on(color)}; border-radius: {style.RADIUS_S}px; padding: 0 4px; font-size: 11px;"
             )
             chips.addWidget(chip)
-        scope = QLabel(doc.lecture or "Whole subject")
+        scope = _Elided(doc.lecture or "Whole subject")
         scope.setObjectName("muted")
-        scope.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         chips.addWidget(scope, 1)
         layout = QVBoxLayout(row)
-        layout.setContentsMargins(6, 3, 6, 4)
+        layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(2)
         layout.addWidget(name)
         layout.addLayout(chips)
@@ -330,7 +341,7 @@ class DocumentsPanel(QWidget):
             button.setProperty("tag", tag)
             button.setToolTip(f"Show only documents tagged “{tag}”")
             button.setStyleSheet(
-                f"QToolButton {{ border: 1px solid {color}; border-radius: 8px; padding: 1px 7px; font-size: 11px; }}"
+                f"QToolButton {{ border: 1px solid {color}; border-radius: {style.RADIUS_S}px; padding: 2px 8px; font-size: 11px; }}"
                 f"QToolButton:checked {{ background: {color}; color: {_text_on(color)}; }}"
             )
             button.toggled.connect(lambda on, tag=tag: self.set_tag_filter(tag, on))

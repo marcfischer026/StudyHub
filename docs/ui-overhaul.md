@@ -164,3 +164,17 @@ No exclamation marks, no "magic", no emoji in headings or buttons.
 5. Restyle each panel against the tokens; remove inline styles and emoji.
 6. Motion + Reduce motion/transparency checks; light and dark pass; half-screen pass.
 7. unslop-ui audit by eye (spacing, alignment, overflow with long subject names).
+
+## Audit (step 7)
+
+- Clean by scan: no gradients, glow, violet/indigo, emoji icons or default fonts; every colour
+  is a token, a state colour or a tag colour you chose.
+- Fixed: off-scale spacing (3/6/10/14 px → 4/8/16), tag chips from pills to the 4 px radius,
+  the "Slides" tag blue matched to the accent, leftover emoji-sized fonts on two buttons.
+- Fixed: long PDF and lecture names in the documents list were cut off; now "…" in the
+  middle of file names (the extension stays) and at the end of lecture names. Sidebar rows
+  show the full name as a tooltip.
+- Fixed: the start page was hero + full-width buttons + three cards. Now a task heading, one
+  sentence, buttons at natural width with a real "+" icon, and the first steps as a list.
+- Accepted: with a very long word in a lecture title the notes column needs ~260 px, so at
+  half-screen the sidebar steps aside; ⌥⌘S brings it back. Breaking words would read worse.

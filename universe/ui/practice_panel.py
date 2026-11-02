@@ -170,7 +170,7 @@ class PracticePanel(ScopedPanel):
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(6, 6, 6, 6)
+        body_layout.setContentsMargins(8, 8, 8, 8)
         body_layout.addWidget(self.idle)
         body_layout.addWidget(self.question_view)
         body_layout.addStretch(1)
@@ -180,7 +180,7 @@ class PracticePanel(ScopedPanel):
         self.timer.timeout.connect(self._tick)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 0)
+        layout.setContentsMargins(8, 8, 8, 0)
         layout.addWidget(self.header)
         layout.addWidget(self.controls)
         layout.addWidget(self.scroll, 1)

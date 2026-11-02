@@ -196,8 +196,8 @@ class ProgressPanel(ScopedPanel):
 
         body = QWidget()
         column = QVBoxLayout(body)
-        column.setContentsMargins(6, 6, 6, 6)
-        column.setSpacing(10)
+        column.setContentsMargins(8, 8, 8, 8)
+        column.setSpacing(8)
         column.addWidget(card("Exam", self.exam))
         column.addWidget(card("Where you stand", self.coverage, self.recall, self.mock, self.calibration, self.unprocessed))
         column.addWidget(card("Topics", self.table, self.table_hint))

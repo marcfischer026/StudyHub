@@ -125,7 +125,7 @@ class GuidePanel(ScopedPanel):
         self.browser.anchorClicked.connect(self.open_link)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(self.list)
         layout.addWidget(self.browser, 1)
 

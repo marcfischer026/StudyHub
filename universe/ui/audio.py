@@ -470,7 +470,7 @@ class PlayerBar(QWidget):
         self.empty.setObjectName("muted")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setContentsMargins(12, 4, 12, 4)
         for w in (self.play_btn, back, fwd):
             layout.addWidget(w)
         layout.addWidget(self.slider, 1)

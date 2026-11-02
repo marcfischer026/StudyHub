@@ -137,7 +137,7 @@ class Sidebar(QWidget):
         buttons.addWidget(add_lecture)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 8)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(self.filter)
         layout.addWidget(self.tree, 1)
         layout.addWidget(self.empty, 1)
@@ -156,6 +156,7 @@ class Sidebar(QWidget):
         self.tree.setVisible(bool(subjects))
         for subject in subjects:
             s_item = QTreeWidgetItem([subject.name])
+            s_item.setToolTip(0, subject.name)  # long names end in "…" in the tree
             s_item.setIcon(0, icons.icon("library"))
             s_item.setData(0, ROLE, subject)
             font = s_item.font(0)
@@ -166,6 +167,7 @@ class Sidebar(QWidget):
                 target = s_item
             for lecture in subject.lectures():
                 l_item = QTreeWidgetItem([lecture.name])
+                l_item.setToolTip(0, lecture.name)
                 l_item.setIcon(0, icons.icon("audio-lines") if lecture.audio_files() else icons.icon("notebook-pen"))
                 l_item.setData(0, ROLE, lecture)
                 s_item.addChild(l_item)

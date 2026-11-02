@@ -52,7 +52,7 @@ TAG_PALETTE = {
     "Yellow": "#f5c518",
     "Green": "#30a46c",
     "Teal": "#12a594",
-    "Blue": "#3e7bfa",
+    "Blue": "#3A72A8",  # the app's accent, so "Slides" chips don't compete with it
     "Purple": "#8e4ec6",
     "Pink": "#e93d82",
     "Grey": "#8b8d98",

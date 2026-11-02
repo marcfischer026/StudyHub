@@ -349,8 +349,8 @@ class ActivityIndicator(QWidget):
         self.pause_btn.clicked.connect(self.toggle_pause)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 6, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(4)
         layout.addWidget(self.label)
         layout.addWidget(self.mini)
         layout.addWidget(self.pause_btn)
@@ -502,7 +502,7 @@ class ActivityPopup(QFrame):
         battery_row.addStretch()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
         layout.addLayout(head)
         layout.addWidget(self.job_label)
