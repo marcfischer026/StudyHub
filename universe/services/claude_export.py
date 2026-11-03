@@ -23,7 +23,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..storage import DOC_TYPES, atomic_write_text, safe_name
-from . import practice
+from . import practice, tutor
 from .claude_reply import RECORD_CATALOGUE, TUTOR_EXPORT, build_manifest, save_manifest
 from .pdf_conversion import page_list, stamp
 from .subject_model import DocumentView, LectureView, LineView, PageView, RecordingView, SubjectView
@@ -46,6 +46,9 @@ SHARED_FILE = "02 Past exams and tasks.md"
 PROGRESS_FILE = "03 My progress.md"
 KNOWLEDGE_FILE = "04 Current knowledge.md"
 SIDE_TALK_FILE = "05 Side talk.md"
+CHATS_FILE = "06 Tutor chats.md"
+CHATS_CHARS = 40_000  # about 10k tokens of the newest tutor chats
+TUTOR_CHATS_CHARS = 12_000  # in a tutor round, next to the weakest objectives
 _FOLDER = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}\.\d{2} ")  # anything else in claude/ is not ours to delete
 
 NO_NOTES = "No notes for this lecture. That says nothing about what matters."
@@ -83,6 +86,7 @@ WHAT IS TRUE, highest authority first
 4. N and F = my own notes and clipped figures. I take notes rarely and not well. Keep what I noted, because it can hold things that were said and things I found important, but never treat a note as correct because I wrote it: check it against the slides and tell me kindly what is wrong. Missing notes mean NOTHING: never conclude that something is unimportant, or that I do not know it, because no note exists.
 5. PR = professor profile. It shapes style and priorities and is never evidence for a fact.
 6. KN = your own knowledge. Use it only to explain or bridge, always labelled "truth":"outside", never as the only support for an exam answer. If the course material does not settle a point, say so instead of filling the gap silently.
+7. Tutor chats = my chats with a small local AI. Its answers are never evidence and never cited. My own questions and answers there show what I find hard and what I get wrong.
 
 CONFLICTS
 If sources disagree, never merge them silently: write a conflict record citing both. The slide wins as the working answer, with one exception: if the lecturer explicitly corrects the slide ("auf der Folie ist das falsch", "das gilt nicht mehr"), the spoken version wins and needs_student_check is true.
@@ -104,6 +108,7 @@ Subject-wide:
 - guide: one exam-ready sheet per topic: must-know list with the slides' exact wording, formulas, a worked example step by step, typical traps, what was said beyond the slides, how past exams ask it. Cite inline like [SL04.p12].
 - q: questions in the style of the past exams, testing understanding and application, not recognition. Cover every objective: 4 for importance 3, 3 for importance 2, 1 for importance 1, each asking from a different angle, never a near-copy. Mix the types the exam uses; use calc with worked steps for anything computable, and work the numbers out properly. Every wrong mc option is a plausible misconception with its why_wrong. Use type card for pure recall. Ids: L03-o012 for objectives, q_L03_001 for questions, by the lecture they come from.
 - doc_note and prof: anything you noticed about the documents, and what the material shows about how my professor tests.
+- tutor_note: if my tutor chats are attached, one for each misconception or gap my questions and answers there show, and what to do next. Also make sure the objectives and questions cover what I asked about.
 
 For each lecture in this export:
 - coverage: account for every slide page and recording: either covered, or in uncovered with a reason. This is how I know you really read everything.
@@ -119,7 +124,7 @@ JSON Lines: one JSON object per line, nothing else. Never put a line break insid
 {record_catalogue}
 
 If you can create files, write everything into one downloadable file universe_reply.jsonl. Otherwise put each part into one ```jsonl code block, at most about 10,000 tokens per message, stop at a record boundary, end the part with {"t":"end","records":<number of records in this part>,"more":true}, and wait for me to say next. The last part ends with "more":false.
-Order: head, exam_model, topic, objective; then per lecture coverage, said, conflict, note_fix, label; then guide; then q; doc_note and prof at the end. Start each part with its head record. If you run out of room, finish lectures and objectives before guides and questions.
+Order: head, exam_model, topic, objective; then per lecture coverage, said, conflict, note_fix, label; then guide; then q; doc_note, prof and tutor_note at the end. Start each part with its head record. If you run out of room, finish lectures and objectives before guides and questions.
 </output_format>"""
 
 TUTOR_HEAD = """You are my personal exam tutor for the university course "{subject}".{exam_sentence} Everything in \
@@ -130,7 +135,8 @@ SL = my professor's slides: definitive. The exam is built on them, and definitio
 R = what was said in the lecture, an automatic transcript with misheard words: use it for explanations and emphasis, and \
 do not trust a spoken number unless a slide or task confirms it. EX and TK = past exams and tasks: they show how things \
 are tested. N and F = my own notes, rarely taken and not always right. KN = your own knowledge: only to explain or bridge, \
-labelled "truth":"outside", never the only support for an answer. If the material does not settle a point, say so.
+labelled "truth":"outside", never the only support for an answer. If the material does not settle a point, say so. \
+My chats with a small local AI tutor, if attached: its answers are never evidence; my questions and answers there show what I find hard.
 Cite with ids exactly as printed and a short verbatim quote (5 to 20 words) in "q"; quotes are machine-checked. \
 [[SL04 p.12]] starts page SL04.p12.
 </source_rules>
@@ -145,7 +151,7 @@ why_wrong. Use only the objective ids and topic ids printed above; question ids 
 the objective comes from.
 - objective: only where a gap shows, with a new id like L03-t{stamp}-o01.
 - grade: one for each free answer listed as not checked yet, using its attempt id.
-- tutor_note: a diagnosis of each misconception my wrong answers show, and what to do next.
+- tutor_note: a diagnosis of each misconception my wrong answers or my tutor chats show, and what to do next.
 </task>
 
 <output_format>
@@ -772,6 +778,7 @@ def _data_check(view: SubjectView, knowledge, lectures: list[LectureView]) -> li
 def _attach_count(view: SubjectView, knowledge, lectures: list[LectureView], side_talk: bool, events: list[dict] | None = None) -> int:
     count = 1 + bool(_shared(view)) + _has_knowledge(knowledge) + side_talk
     count += any(e.get("type") == "attempt" for e in events or ())
+    count += bool(tutor.render_chats(view.subject, CHATS_CHARS))
     sent = {d.ref for d in _shared(view)}
     for lecture in lectures:
         count += len(_split_lecture(lecture, _lecture_blocks(view, lecture, sent, side_talk)))
@@ -786,6 +793,7 @@ def plan_export(view: SubjectView, knowledge, scope: str = "next", lecture_ref: 
     fixed = estimate_tokens(PROMPT + RECORD_CATALOGUE + render_shared_documents(view))
     if _has_knowledge(knowledge):
         fixed += estimate_tokens(render_current_knowledge(knowledge, view)) + PROGRESS_TOKENS
+    fixed += estimate_tokens(tutor.render_chats(view.subject, CHATS_CHARS))
     fixed += estimate_tokens(render_overview(view, ExportPlan(scope, [], [], statuses, 0, budget, include_side_talk, 0, 0, [])))
 
     warnings: list[str] = []
@@ -908,6 +916,8 @@ def write_export(view: SubjectView, plan: ExportPlan, knowledge, events: list[di
         files.append((KNOWLEDGE_FILE, render_current_knowledge(knowledge, view)))
     if side_talk:
         files.append((SIDE_TALK_FILE, side_talk))
+    if chats := tutor.render_chats(view.subject, CHATS_CHARS):
+        files.append((CHATS_FILE, chats))
     sent = {d.ref for d in _shared(view)}
     for lecture in plan.lectures:
         name = safe_name(f"{lecture.ref} {lecture.name}")
@@ -1055,10 +1065,14 @@ def _tutor_prompt(view: SubjectView, knowledge, events: list[dict], now: datetim
     brief = practice.progress_brief(knowledge, events, cards, now, view.exam)
     head = _replace_all(TUTOR_HEAD, {"subject": view.name, "exam_sentence": _exam_sentence(view, now)})
     ending = head + "\n" + _replace_all(task, {"stamp": f"{now:%m%d%H%M}", "catalogue": _catalogue(kinds)})
-    wrapper = len(_as_documents([("My progress", ""), ("Sources", "")]))
-    room = TUTOR_TOKENS * 4 - len(ending) - len(brief) - wrapper - 200
+    chats = tutor.render_chats(view.subject, TUTOR_CHATS_CHARS)
+    wrapper = len(_as_documents([("My progress", ""), ("Sources", ""), ("Chats", "")]))
+    room = TUTOR_TOKENS * 4 - len(ending) - len(brief) - len(chats) - wrapper - 200
     sources = _weak_sources(view, knowledge, cards, now, room)
-    return f"{_as_documents([('My progress', brief), ('Sources of my weakest objectives', sources)])}\n\n{ending}"
+    documents = [("My progress", brief), ("Sources of my weakest objectives", sources)]
+    if chats:
+        documents.append(("My chats with the local AI tutor", chats))
+    return f"{_as_documents(documents)}\n\n{ending}"
 
 
 def tutor_questions_prompt(view: SubjectView, knowledge, events: list[dict], now: datetime | None = None) -> str:

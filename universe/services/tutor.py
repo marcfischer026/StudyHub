@@ -15,12 +15,14 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from ..config import Settings
 from ..storage import Subject
 from . import local_llm
-from .vector_index import Hit
+
+if TYPE_CHECKING:  # lancedb is heavy, and the export only renders the log
+    from .vector_index import Hit
 
 MODES = {
     "explain": "Explain",
@@ -152,6 +154,64 @@ def log_turn(subject: Subject, chat_id: str, mode: str, topic: str, turn: Turn) 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def read_log(subject: Subject) -> list[dict]:
+    """Every logged turn, oldest first; a broken line is skipped."""
+    try:
+        lines = log_path(subject).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("role") in ("user", "assistant") and record.get("text"):
+            records.append(record)
+    return records
+
+
+EXPORT_HEAD = """# My chats with the local AI tutor
+
+A small AI on my laptop tutored me with my course material. Its answers are NOT evidence and may be \
+wrong: never cite them. What counts is ME: my questions show what I found unclear, and my answers to its \
+quiz questions show what I understand and what I get wrong. Newest chats first; a long tutor reply is shortened.
+"""
+MODE_NAMES = {"explain": "I asked questions", "quiz": "it quizzed me as we went", "zero": "it started from zero with me"}
+REPLY_CHARS = 400
+
+
+def render_chats(subject: Subject, limit: int) -> str:
+    """The newest chats that fit into ``limit`` characters, as Markdown; "" without any."""
+    chats: dict[str, list[dict]] = {}
+    for record in read_log(subject):
+        chats.setdefault(str(record.get("chat", "")), []).append(record)
+    blocks: list[str] = []
+    used = len(EXPORT_HEAD)
+    for turns in reversed(list(chats.values())):
+        if not any(t["role"] == "assistant" for t in turns):
+            continue  # a chat that never got an answer says nothing
+        first = turns[0]
+        title = f"## {str(first.get('at', ''))[:16].replace('T', ' ')}, {first.get('topic') or 'the whole course'}: {MODE_NAMES.get(first.get('mode'), 'chat')}"
+        lines = [title, ""]
+        for turn in turns:
+            text = " ".join(str(turn["text"]).split())
+            if turn["role"] == "user":
+                lines.append(f"ME: {text}")
+            else:
+                lines.append(f"TUTOR: {text if len(text) <= REPLY_CHARS else text[: REPLY_CHARS - 1] + '…'}")
+        block = "\n".join(lines) + "\n\n"
+        if used + len(block) > limit:
+            break
+        blocks.append(block)
+        used += len(block)
+    if not blocks:
+        return ""
+    left = len(chats) - len(blocks)
+    tail = f"({left} older chat{'s' * (left != 1)} left out to keep this short.)\n" if left > 0 else ""
+    return EXPORT_HEAD + "\n" + "".join(blocks) + tail
 
 
 def _drop_unknown_citations(text: str, count: int) -> str:

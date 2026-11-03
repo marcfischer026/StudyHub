@@ -94,6 +94,40 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(tutor.topic_titles(topics), ["Bilanz", "Nebensache"])
 
 
+class ChatExportTests(unittest.TestCase):
+    def setUp(self):
+        self.subject = Workspace(Path(tempfile.mkdtemp())).create_subject("Finanzen")
+
+    def log(self, chat_id: str, *texts: str, topic: str = "Bilanz") -> None:
+        for n, text in enumerate(texts):
+            tutor.log_turn(self.subject, chat_id, "zero", topic, tutor.Turn("user" if n % 2 == 0 else "assistant", text))
+
+    def test_newest_first_and_unanswered_chats_left_out(self):
+        self.log("old", "Alte Frage", "Alte Antwort")
+        self.log("lonely", "Keine Antwort bekommen")
+        self.log("new", "Neue Frage", "Neue Antwort", topic="")
+        text = tutor.render_chats(self.subject, 10_000)
+        self.assertLess(text.index("Neue Frage"), text.index("Alte Frage"))
+        self.assertNotIn("Keine Antwort", text)
+        self.assertIn("the whole course: it started from zero with me", text)
+
+    def test_the_limit_drops_older_chats_and_long_replies_are_cut(self):
+        self.log("old", "Alte Frage", "Alte Antwort")
+        self.log("new", "Neue Frage", "x" * 1000)
+        text = tutor.render_chats(self.subject, len(tutor.EXPORT_HEAD) + 520)
+        self.assertIn("Neue Frage", text)
+        self.assertNotIn("Alte Frage", text)
+        self.assertIn("1 older chat left out", text)
+        self.assertNotIn("x" * tutor.REPLY_CHARS, text)
+
+    def test_nothing_logged_or_a_broken_line(self):
+        self.assertEqual(tutor.render_chats(self.subject, 10_000), "")
+        self.log("c", "Frage", "Antwort")
+        with tutor.log_path(self.subject).open("a", encoding="utf-8") as handle:
+            handle.write("{kaputt\n")
+        self.assertEqual(len(tutor.read_log(self.subject)), 2)
+
+
 class TutorTabTests(unittest.TestCase):
     def setUp(self):
         self.subject = Workspace(Path(tempfile.mkdtemp())).create_subject("Finanzen")

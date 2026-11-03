@@ -18,7 +18,7 @@ os.environ.setdefault("UNIVERSE_DATA_DIR", tempfile.mkdtemp())
 from tests.test_claude_reply import jsonl, make_pdf  # noqa: E402
 from universe.professors import ProfessorProfile, ProfessorStore  # noqa: E402
 from universe.services import claude_export as export  # noqa: E402
-from universe.services import claude_reply, subject_model  # noqa: E402
+from universe.services import claude_reply, subject_model, tutor  # noqa: E402
 from universe.services.claude_reply import check_reply, parse_reply  # noqa: E402
 from universe.services.pdf_conversion import EXPORT_FOLDER, PageCheck, save_pages  # noqa: E402
 from universe.services.pdf_tools import Mark  # noqa: E402
@@ -710,6 +710,33 @@ class CurrentKnowledgeTests(Fixture):
         self.assertNotIn("t_old", text)
         self.assertIn("x" * 80, text)
         self.assertNotIn("x" * 81, text)
+
+
+class TutorChatExportTests(Fixture):
+    def chat(self, chat_id: str, topic: str, *texts: str) -> None:
+        for n, text in enumerate(texts):
+            tutor.log_turn(self.subject, chat_id, "quiz", topic, tutor.Turn("user" if n % 2 == 0 else "assistant", text))
+
+    def test_no_chats_no_file(self):
+        _, result = self.write()
+        self.assertNotIn(export.CHATS_FILE, [p.name for p in result.attach])
+
+    def test_chats_go_along_with_the_rules_for_them(self):
+        self.chat("c1", "Bilanz", "Was ist die Passivseite?", "Sie zeigt die Mittelherkunft.", "Also das Vermögen?")
+        plan, result = self.write()
+        self.assertIn(export.CHATS_FILE, [p.name for p in result.attach])
+        chats = (result.folder / "attach" / export.CHATS_FILE).read_text(encoding="utf-8")
+        self.assertIn("ME: Also das Vermögen?", chats)
+        self.assertIn("TUTOR: Sie zeigt die Mittelherkunft.", chats)
+        self.assertIn("never cite them", chats)
+        self.assertIn("Tutor chats = my chats with a small local AI", result.prompt)
+        self.assertIn(export.CHATS_FILE, result.prompt)
+
+    def test_a_tutor_round_reads_the_chats_too(self):
+        self.chat("c1", "Bilanz", "Was ist die Passivseite?", "Die Herkunft der Mittel.")
+        text = export.tutor_questions_prompt(self.view, Knowledge(), [], NOW)
+        self.assertIn("<source>My chats with the local AI tutor</source>", text)
+        self.assertIn("ME: Was ist die Passivseite?", text)
 
 
 class TutorTests(Fixture):
