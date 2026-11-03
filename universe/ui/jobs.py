@@ -541,8 +541,9 @@ class ActivityPopup(QFrame):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # No setFocus() here: in a full-screen window on macOS it pulls the app forward
+        # and switches Spaces. Esc reaches the app-wide filter wherever the focus is.
         QApplication.instance().installEventFilter(self)
-        self.setFocus()
 
     def hideEvent(self, event) -> None:
         QApplication.instance().removeEventFilter(self)
