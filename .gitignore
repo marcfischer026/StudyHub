@@ -30,3 +30,7 @@ credentials*.json
 # UNIVERSE_DATA_DIR into the project for testing, keep it out of git:
 .universe_data/
 universe_data/
+
+# Throwaway files from screenshot and lint runs
+*.log
+.ruff_cache/
