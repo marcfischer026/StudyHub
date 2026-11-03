@@ -476,7 +476,6 @@ class ActivityPopup(QFrame):
         self.queue_label = QLabel(wordWrap=True)
         self.queue_label.setObjectName("muted")
         self.chart = UsageChart(indicator.history)
-        self.chart.setVisible(SystemMonitor.available())
         self.resources = QLabel()
         self.resources.setTextFormat(Qt.TextFormat.RichText)
         self.resources.setObjectName("muted")
@@ -537,6 +536,9 @@ class ActivityPopup(QFrame):
         layout.addWidget(self.only_charging)
         layout.addWidget(_rule())
         layout.addWidget(self.history)
+        # Only once it's in the layout: shown without a parent, the chart would open as a window
+        # of its own for a moment, and in a full-screen window on macOS that switches Spaces.
+        self.chart.setHidden(not SystemMonitor.available())
         self.refresh()
 
     def showEvent(self, event) -> None:

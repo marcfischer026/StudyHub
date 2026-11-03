@@ -311,6 +311,36 @@ class UsageChartTests(unittest.TestCase):
         self.assertEqual(_until([(0, 10), (2, 30)], 1), [(0, 10), (1, 20.0)])
         self.assertEqual(_until([(0, 10), (2, 30)], 5), [(0, 10), (2, 30)])
 
+    def test_opening_the_popup_shows_no_window_of_its_own(self):
+        """Any top-level window shown on the way, even for a moment, switches Spaces in full screen."""
+        from PySide6.QtCore import QEvent, QObject
+        from PySide6.QtWidgets import QMainWindow, QWidget
+
+        class ShownWindows(QObject):
+            def __init__(self):
+                super().__init__()
+                self.shown = []
+
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
+                    self.shown.append(type(obj).__name__)
+                return False
+
+        window = QMainWindow()
+        indicator = ActivityIndicator(JobManager(), Settings())
+        indicator.timer.stop()
+        window.statusBar().addPermanentWidget(indicator)
+        window.show()
+        spy = ShownWindows()
+        app.installEventFilter(spy)
+        try:
+            indicator.toggle_popup()
+        finally:
+            app.removeEventFilter(spy)
+        self.assertEqual(spy.shown, [])
+        indicator.popup.close()
+        window.close()
+
     def test_popup_is_a_panel_in_the_window_and_closes_like_a_popover(self):
         from PySide6.QtCore import QPointF
         from PySide6.QtGui import QKeyEvent, QMouseEvent
