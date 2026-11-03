@@ -30,11 +30,11 @@ FPS = 30
 EASE = 0.12  # share of the remaining distance a readout covers per frame: a calm glide
 INTERVAL = 2.0  # seconds between readings (the indicator's timer)
 
-# GPU is the second series: teal, apart from the blue accent in hue and lightness
-# and outside the state colours (red/amber/green).
-GPU_LIGHT, GPU_DARK = "#1F7A72", "#4FB3A9"
-# Memory is the third: a warm ochre, apart from both in hue.
-RAM_LIGHT, RAM_DARK = "#9A6A2F", "#D4A266"
+# The lines need more colour than the app's calm accent to read at 2 px: saturated
+# blue, teal and orange, far apart in hue, each ≥ 4.8:1 on the chart's background
+# (white in light mode, the card tint in dark mode). Outside the state colours.
+SERIES_LIGHT = {"cpu": "#0058D6", "gpu": "#00806E", "ram": "#C24E00"}
+SERIES_DARK = {"cpu": "#5AA9FF", "gpu": "#2ED3B7", "ram": "#FFAA33"}
 
 
 @dataclass
@@ -56,13 +56,13 @@ def palette() -> Palette:
     dim = style.qcolor(t.text)
     dim.setAlphaF(0.7)
     return Palette(
-        panel=style.qcolor(t.card),
+        panel=style.qcolor(t.card if t.dark else t.raised),
         grid=style.qcolor(t.border),
         frame=style.qcolor(t.separator),
         text=style.qcolor(t.text),
         dim=dim,
         hover=style.qcolor(t.raised),
-        series={"cpu": style.qcolor(t.accent), "gpu": QColor(GPU_DARK if t.dark else GPU_LIGHT), "ram": QColor(RAM_DARK if t.dark else RAM_LIGHT)},
+        series={key: QColor(colour) for key, colour in (SERIES_DARK if t.dark else SERIES_LIGHT).items()},
     )
 
 
@@ -281,7 +281,7 @@ class UsageChart(QWidget):
         painter.save()
         painter.setClipRect(QRectF(left, top - 3, right - left + 4, bottom - top + 6))
         for key in ("ram", "gpu", "cpu"):  # CPU on top
-            pen = QPen(self.p.series[key], 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            pen = QPen(self.p.series[key], 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
             runs = _runs(readings, key)
             for run in runs:
                 points = _until([(r.t, getattr(r, key)) for r in run], shown_now)
@@ -306,7 +306,7 @@ class UsageChart(QWidget):
     def _paint_heads(self, painter, metrics, heads, right, top, bottom) -> None:
         """Each live line's value right beside its moving point, nudged apart where they'd overlap."""
         bold = QFont(painter.font())
-        bold.setWeight(QFont.Weight.DemiBold)
+        bold.setWeight(QFont.Weight.Bold)
         painter.setFont(bold)
         step = metrics.height() + 1
         placed: list[tuple[float, str]] = []
