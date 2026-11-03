@@ -51,14 +51,16 @@ class Palette:
 def palette() -> Palette:
     """The app's own tokens, so the panel sits in the window like the rest of it."""
     t = style.tokens()
-    grid = style.qcolor(t.border)
-    grid.setAlpha(grid.alpha() // 2)
+    # Secondary text a step darker than the app's muted token: small mono figures on a
+    # tinted panel need more contrast than a muted line of body text.
+    dim = style.qcolor(t.text)
+    dim.setAlphaF(0.7)
     return Palette(
         panel=style.qcolor(t.card),
-        grid=grid,
+        grid=style.qcolor(t.border),
         frame=style.qcolor(t.separator),
         text=style.qcolor(t.text),
-        dim=style.qcolor(t.muted),
+        dim=dim,
         hover=style.qcolor(t.raised),
         series={"cpu": style.qcolor(t.accent), "gpu": QColor(GPU_DARK if t.dark else GPU_LIGHT), "ram": QColor(RAM_DARK if t.dark else RAM_LIGHT)},
     )
@@ -240,8 +242,9 @@ class UsageChart(QWidget):
         painter.drawRoundedRect(plot, style.RADIUS_M, style.RADIUS_M)
         painter.setFont(small)
         metrics = QFontMetricsF(small)
-        gutter = metrics.horizontalAdvance("100%") + 8
-        area = QRectF(plot.left() + 10, plot.top() + 10, plot.width() - gutter - 14, plot.height() - metrics.height() - 18)
+        scale = metrics.horizontalAdvance("100%") + 6  # left: the 0/50/100 scale
+        tags = metrics.horizontalAdvance("88.8 GB") + 14  # right: each line's value beside its point
+        area = QRectF(plot.left() + 8 + scale, plot.top() + 10, plot.width() - scale - tags - 10, plot.height() - metrics.height() - 18)
         left, right, top, bottom = area.left(), area.right(), area.top(), area.bottom()
         # Drawn one reading behind the clock, so the newest stretch of each line grows in
         # continuously instead of appearing a whole segment at a time.
@@ -261,8 +264,8 @@ class UsageChart(QWidget):
             painter.drawLine(QPointF(left, y), QPointF(right, y))
             painter.setPen(self.p.dim)
             painter.drawText(
-                QRectF(right + 6, y - metrics.height() / 2, gutter, metrics.height()),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                QRectF(left - scale - 4, y - metrics.height() / 2, scale, metrics.height()),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 f"{level}%" if level == 100 else str(level),
             )
         axis = QRectF(left, bottom + 4, right - left, metrics.height())
@@ -274,10 +277,11 @@ class UsageChart(QWidget):
             painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Measuring…")
             return
 
+        heads: dict[str, tuple[float, float]] = {}  # where each line is now, and its value
         painter.save()
         painter.setClipRect(QRectF(left, top - 3, right - left + 4, bottom - top + 6))
         for key in ("ram", "gpu", "cpu"):  # CPU on top
-            pen = QPen(self.p.series[key], 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            pen = QPen(self.p.series[key], 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
             runs = _runs(readings, key)
             for run in runs:
                 points = _until([(r.t, getattr(r, key)) for r in run], shown_now)
@@ -287,13 +291,41 @@ class UsageChart(QWidget):
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawPath(_smooth([QPointF(x_of(t), y_of(v)) for t, v in points]))
                 if run is runs[-1]:  # a dot where the line is now
-                    painter.setPen(Qt.PenStyle.NoPen)
+                    head = QPointF(x_of(points[-1][0]), y_of(points[-1][1]))
+                    painter.setPen(QPen(self.p.panel, 1.5))
                     painter.setBrush(self.p.series[key])
-                    painter.drawEllipse(QPointF(x_of(points[-1][0]), y_of(points[-1][1])), 2.5, 2.5)
+                    painter.drawEllipse(head, 3.5, 3.5)
+                    if head.x() > right - 2:  # only a line that is live, not one that stopped earlier
+                        heads[key] = (head.y(), points[-1][1])
         painter.restore()
+        self._paint_heads(painter, metrics, heads, right, top, bottom)
 
         if self.hover_x is not None:
             self._paint_hover(painter, metrics, readings, x_of, y_of, shown_now, (left, right, top, bottom))
+
+    def _paint_heads(self, painter, metrics, heads, right, top, bottom) -> None:
+        """Each live line's value right beside its moving point, nudged apart where they'd overlap."""
+        bold = QFont(painter.font())
+        bold.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(bold)
+        step = metrics.height() + 1
+        placed: list[tuple[float, str]] = []
+        for key, (y, value) in sorted(heads.items(), key=lambda item: item[1][0]):
+            if placed and y - placed[-1][0] < step:
+                y = placed[-1][0] + step
+            placed.append((y, key))
+        if placed and placed[-1][0] > bottom + step / 2:  # pushed off the bottom: shift all up
+            shift = placed[-1][0] - (bottom + step / 2)
+            placed = [(y - shift, key) for y, key in placed]
+        for y, key in placed:
+            value = heads[key][1]
+            text = f"{self._gb(value):.1f} GB" if key == "ram" and self._gb(value) is not None else f"{value:.0f}%"
+            painter.setPen(self.p.series[key])
+            painter.drawText(
+                QRectF(right + 8, y - metrics.height() / 2, metrics.horizontalAdvance(text) + 8, metrics.height()),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                text,
+            )
 
     def _paint_hover(self, painter, metrics, readings, x_of, y_of, shown_now, bounds) -> None:
         left, right, top, bottom = bounds
@@ -325,6 +357,9 @@ class UsageChart(QWidget):
         text = "  ·  ".join(parts)
         box = QRectF(0, top, metrics.horizontalAdvance(text) + 14, metrics.height() + 8)
         box.moveLeft(x + 8 if x + 8 + box.width() <= right else x - 8 - box.width())
+        if box.left() < left:  # too wide for either side: keep it inside the chart, under the top line
+            box.moveLeft(left)
+            box.moveTop(top + 6)
         painter.setPen(QPen(self.p.frame, 1))
         painter.setBrush(self.p.hover)
         painter.drawRoundedRect(box, style.RADIUS_S, style.RADIUS_S)
