@@ -1,14 +1,14 @@
-"""Live CPU, GPU and memory use for the activity popup: quotes and a two-minute chart.
+"""Live CPU, GPU and memory use for the activity panel: three readouts and a two-minute chart.
 
-Laid out like a market display, in the app's own colours: a crisp 1-pixel
-grid, smooth lines for CPU, GPU and memory, the current values tagged on the
-scale, and each quote with its change over the last minute and the high, low
-and average of the window.
+Quiet on purpose, in the app's own colours: each readout is the value (memory
+in GB) with the high, low and average of the window under it; the chart is
+three smooth lines on a three-level grid, with a dot where each line is now
+and the values at any moment on hover.
 
-The chart is drawn against the clock, not per sample, so it glides left
-between the two-second readings and a pause in sampling shows as a gap
-instead of a jump. The numbers ease to each new reading. With "Reduce
-motion" on, nothing moves; values simply update on each reading.
+The chart is drawn against the clock, one reading behind it, so each line
+grows in continuously instead of jumping a segment every two seconds, and a
+pause in sampling shows as a gap. The numbers ease to each new reading. With
+"Reduce motion" on, nothing moves; values simply update on each reading.
 """
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ from . import motion, style
 WINDOW = 120.0  # seconds of history on screen
 GAP = 6.0  # seconds without a reading that break the line (sampling pauses while idle)
 FPS = 30
-EASE = 0.3  # share of the remaining distance a readout covers per frame
+EASE = 0.12  # share of the remaining distance a readout covers per frame: a calm glide
+INTERVAL = 2.0  # seconds between readings (the indicator's timer)
 
 # GPU is the second series: teal, apart from the blue accent in hue and lightness
 # and outside the state colours (red/amber/green).
@@ -43,10 +44,7 @@ class Palette:
     frame: QColor
     text: QColor
     dim: QColor
-    on_fill: QColor  # text on a filled tag
     hover: QColor
-    up: QColor
-    down: QColor
     series: dict
 
 
@@ -61,11 +59,7 @@ def palette() -> Palette:
         frame=style.qcolor(t.separator),
         text=style.qcolor(t.text),
         dim=style.qcolor(t.muted),
-        on_fill=QColor("#FFFFFF"),
         hover=style.qcolor(t.raised),
-        # The state colours are tuned for light backgrounds; on dark they need to be brighter.
-        up=QColor("#3FB950" if t.dark else style.SUCCESS),
-        down=QColor("#F85149" if t.dark else style.DANGER),
         series={"cpu": style.qcolor(t.accent), "gpu": QColor(GPU_DARK if t.dark else GPU_LIGHT), "ram": QColor(RAM_DARK if t.dark else RAM_LIGHT)},
     )
 
@@ -122,17 +116,23 @@ class UsageChart(QWidget):
         if snap.gpu_mem_gb is not None:
             tips.append(f"GPU: {snap.gpu_mem_gb:.1f} GB of memory held by the GPU (loaded models)")
         if snap.ram_total_gb:
-            tips.append(f"Memory: share of {snap.ram_total_gb:.0f} GB in use")
-        tips.append("▲▼: change over the last minute · H, L, Ø: high, low and average of the two minutes shown")
+            tips.append(f"Memory: in use, of {snap.ram_total_gb:.0f} GB")
+        tips.append("H, L, Ø: high, low and average of the two minutes shown")
         self.setToolTip("\n".join(tips))
-        self.snapshot = snap  # the readouts count up from zero when the popup opens
-        if not motion.enabled():
+        first = self.snapshot.cpu is None
+        self.snapshot = snap
+        if first or not motion.enabled():  # open on the values, then ease between readings
             self._settle()
         self.update()
 
     def _targets(self) -> dict[str, float]:
         snap = self.snapshot
-        return {"cpu": snap.cpu or 0.0, "gpu": snap.gpu or 0.0, "ram": snap.ram_used or 0.0}
+        return {"cpu": snap.cpu or 0.0, "gpu": snap.gpu or 0.0, "ram": self._gb(snap.ram_used) or 0.0}
+
+    def _gb(self, share: float | None) -> float | None:
+        """Memory in use in GB, from the percentage the readings keep."""
+        total = self.snapshot.ram_total_gb
+        return None if share is None or not total else share / 100 * total
 
     def _settle(self) -> None:
         self.shown = self._targets()
@@ -172,9 +172,11 @@ class UsageChart(QWidget):
         small, value, label = QFont(family), QFont(family), QFont(self.font())
         small.setPointSizeF(base - 3)
         label.setPointSizeF(base - 1.5)
-        label.setWeight(QFont.Weight.DemiBold)
-        value.setPointSizeF(base + 7)
-        value.setWeight(QFont.Weight.DemiBold)
+        value = QFont(self.font())
+        value.setPointSizeF(base + 6)
+        value.setWeight(QFont.Weight.Medium)
+        if hasattr(value, "setFeature"):  # digits of equal width, so easing numbers don't jitter
+            value.setFeature(QFont.Tag("tnum"), 1)
         return small, label, value
 
     def paintEvent(self, event) -> None:
@@ -188,172 +190,146 @@ class UsageChart(QWidget):
 
     def _paint_quotes(self, painter: QPainter, small: QFont, label: QFont, value: QFont, readings, now: float) -> None:
         snap = self.snapshot
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         notes = {
             "cpu": "",
             "gpu": f"{snap.gpu_mem_gb:.1f} GB" if snap.gpu_mem_gb is not None else "",
-            "ram": f"{snap.ram_total_gb:.0f} GB" if snap.ram_total_gb else "",
+            "ram": f"of {snap.ram_total_gb:.0f} GB" if snap.ram_total_gb else "",
         }
-        known = {"cpu": snap.cpu is not None, "gpu": snap.gpu is not None, "ram": snap.ram_used is not None}
+        units = {"cpu": "%", "gpu": "%", "ram": "GB"}
+        known = {"cpu": snap.cpu is not None, "gpu": snap.gpu is not None, "ram": self._gb(snap.ram_used) is not None}
         width = self.width() / 3
-        top = 0
         for i, (key, name) in enumerate((("cpu", "CPU"), ("gpu", "GPU"), ("ram", "Memory"))):
-            cell = QRectF(i * width, top, width, QUOTE_H)
-            if i:
-                painter.setPen(QPen(self.p.frame, 1))
-                painter.drawLine(int(cell.left()), int(cell.top()), int(cell.left()), int(cell.bottom()) - 1)
-            inner = cell.adjusted(0 if i == 0 else 10, 4, -10 if i < 2 else 0, -6)  # flush with the text above
-            # Ticker line: colour key, name, note.
-            painter.fillRect(QRectF(inner.left(), inner.top() + 3, 6, 6), self.p.series[key])
+            cell = QRectF(i * width, 0, width, QUOTE_H)
+            inner = cell.adjusted(0 if i == 0 else 10, 2, -10 if i < 2 else 0, -8)  # flush with the text above
+            # Name with a dot in its line's colour, and a quiet note on the right.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self.p.series[key])
+            painter.drawEllipse(QPointF(inner.left() + 3, inner.top() + 7), 3, 3)
             painter.setFont(label)
             painter.setPen(self.p.dim)
-            painter.drawText(inner.adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, name)
+            painter.drawText(inner.adjusted(11, 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, name)
             painter.setFont(small)
-            painter.setPen(self.p.dim)
             painter.drawText(inner, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, notes[key])
-            # Last value, then the change over the last minute.
+            # The value, with its unit small beside it.
             painter.setFont(value)
             metrics = QFontMetricsF(value)
-            baseline = inner.top() + 14 + metrics.ascent()
+            baseline = inner.top() + 16 + metrics.ascent()
             painter.setPen(self.p.text)
-            text = _number(self.shown[key]) if known[key] else "—"
-            painter.drawText(QPointF(inner.left(), baseline), text.strip())
-            change = _change(readings, key, now)
-            if change is not None and known[key]:
-                arrow = "▲" if change > 0.05 else "▼" if change < -0.05 else "■"
-                colour = self.p.up if change > 0.05 else self.p.down if change < -0.05 else self.p.dim
-                painter.setFont(small)
-                painter.setPen(colour)
-                painter.drawText(
-                    QRectF(inner.left(), baseline - metrics.ascent(), inner.width(), metrics.ascent()),
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
-                    f"{arrow}{abs(change):4.1f}",
-                )
+            number = _number(self.shown[key]) if known[key] else "–"
+            painter.drawText(QPointF(inner.left(), baseline), number)
+            if known[key]:
+                painter.setFont(label)
+                painter.setPen(self.p.dim)
+                painter.drawText(QPointF(inner.left() + metrics.horizontalAdvance(number) + 3, baseline), units[key])
             # Range of the window: high, low, average.
             stats = _stats(readings, key)
+            if key == "ram" and stats:
+                stats = tuple(self._gb(v) for v in stats)
             painter.setFont(small)
             painter.setPen(self.p.dim)
-            line = f"H {stats[0]:.0f} L {stats[1]:.0f} Ø {stats[2]:.0f}" if stats else "H – L – Ø –"
+            digits = 1 if key == "ram" else 0
+            line = f"H {stats[0]:.{digits}f}  L {stats[1]:.{digits}f}  Ø {stats[2]:.{digits}f}" if stats else ""
             painter.drawText(inner, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, line)
-        painter.setPen(QPen(self.p.frame, 1))
-        y = int(top + QUOTE_H) - 1
-        painter.drawLine(0, y, self.width(), y)
 
     def _paint_plot(self, painter: QPainter, small: QFont, readings, now: float) -> None:
         plot = self._plot_rect()
-        painter.fillRect(plot, self.p.panel)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.p.panel)
+        painter.drawRoundedRect(plot, style.RADIUS_M, style.RADIUS_M)
         painter.setFont(small)
         metrics = QFontMetricsF(small)
-        gutter = metrics.horizontalAdvance("100.0") + 10
-        area = QRectF(plot.left() + 6, plot.top() + 8, plot.width() - gutter - 6, plot.height() - metrics.height() - 20)
-        left, right, top, bottom = int(area.left()), int(area.right()), int(area.top()), int(area.bottom())
+        gutter = metrics.horizontalAdvance("100%") + 8
+        area = QRectF(plot.left() + 10, plot.top() + 10, plot.width() - gutter - 14, plot.height() - metrics.height() - 18)
+        left, right, top, bottom = area.left(), area.right(), area.top(), area.bottom()
+        # Drawn one reading behind the clock, so the newest stretch of each line grows in
+        # continuously instead of appearing a whole segment at a time.
+        shown_now = now - INTERVAL if motion.enabled() else now
 
-        def y_of(value: float) -> int:
-            return round(bottom - (bottom - top) * max(0.0, min(value, 100.0)) / 100)
+        def y_of(value: float) -> float:
+            return bottom - (bottom - top) * max(0.0, min(value, 100.0)) / 100
 
-        def x_of(r: Reading) -> int:
-            return round(right - (now - r.t) / WINDOW * (right - left))
+        def x_of(t: float) -> float:
+            return right - (shown_now - t) / WINDOW * (right - left)
 
-        # Grid: every 10 % faint, every 50 % stronger; vertical every 30 s.
-        for level in range(0, 101, 10):
-            painter.setPen(QPen(self.p.frame if level % 50 == 0 else self.p.grid, 1))
-            painter.drawLine(left, y_of(level), right, y_of(level))
-        for seconds in range(0, int(WINDOW) + 1, 30):
-            x = round(right - seconds / WINDOW * (right - left))
-            painter.setPen(QPen(self.p.grid, 1))
-            painter.drawLine(x, top, x, bottom)
-            painter.setPen(QPen(self.p.frame, 1))
-            painter.drawLine(x, bottom, x, bottom + 3)
-            text = "now" if seconds == 0 else f"-{seconds // 60}:{seconds % 60:02d}"
-            box = QRectF(x - 30, bottom + 4, 60, metrics.height())
-            align = Qt.AlignmentFlag.AlignHCenter
-            if seconds == 0:
-                box.moveRight(x + 2)
-                align = Qt.AlignmentFlag.AlignRight
-            elif seconds == int(WINDOW):
-                box.moveLeft(x)
-                align = Qt.AlignmentFlag.AlignLeft
-            painter.setPen(self.p.dim)
-            painter.drawText(box, align | Qt.AlignmentFlag.AlignTop, text)
-        # The scale: a ruled axis on the right.
-        painter.setPen(QPen(self.p.frame, 1))
-        painter.drawLine(right, top, right, bottom)
+        # A quiet grid: three levels and their labels, the two ends of the time axis.
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         for level in (0, 50, 100):
+            y = round(y_of(level)) + 0.5
+            painter.setPen(QPen(self.p.frame if level == 0 else self.p.grid, 1))
+            painter.drawLine(QPointF(left, y), QPointF(right, y))
             painter.setPen(self.p.dim)
             painter.drawText(
-                QRectF(right + 4, y_of(level) - metrics.height() / 2, gutter - 6, metrics.height()),
+                QRectF(right + 6, y - metrics.height() / 2, gutter, metrics.height()),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                f"{level:.0f}",
+                f"{level}%" if level == 100 else str(level),
             )
+        axis = QRectF(left, bottom + 4, right - left, metrics.height())
+        painter.drawText(axis, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "2 min ago")
+        painter.drawText(axis, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, "now")
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         if not readings:
-            painter.setPen(self.p.dim)
             painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Measuring…")
             return
 
-        # The lines themselves are smooth: anti-aliased, at sub-pixel positions, so they glide.
-        def point(r: Reading, key: str) -> QPointF:
-            value = max(0.0, min(getattr(r, key), 100.0))
-            return QPointF(right - (now - r.t) / WINDOW * (right - left), bottom - (bottom - top) * value / 100)
-
         painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setClipRect(QRectF(left, top - 2, right - left, bottom - top + 4))
+        painter.setClipRect(QRectF(left, top - 3, right - left + 4, bottom - top + 6))
         for key in ("ram", "gpu", "cpu"):  # CPU on top
-            pen = QPen(self.p.series[key], 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(pen)
-            for run in _runs(readings, key):
-                painter.drawPath(_smooth([point(r, key) for r in run]))
+            pen = QPen(self.p.series[key], 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            runs = _runs(readings, key)
+            for run in runs:
+                points = _until([(r.t, getattr(r, key)) for r in run], shown_now)
+                if not points:
+                    continue
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(_smooth([QPointF(x_of(t), y_of(v)) for t, v in points]))
+                if run is runs[-1]:  # a dot where the line is now
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(self.p.series[key])
+                    painter.drawEllipse(QPointF(x_of(points[-1][0]), y_of(points[-1][1])), 2.5, 2.5)
         painter.restore()
 
-        # Last value tagged on the scale, like a price label; the later tag yields if they collide.
-        taken: list[float] = []
-        for key in ("cpu", "gpu", "ram"):
-            last = next((r for r in reversed(readings) if getattr(r, key) is not None), None)
-            if last is None:
-                continue
-            y = y_of(getattr(last, key))
-            while any(abs(y - other) < metrics.height() + 1 for other in taken):
-                y += metrics.height() + 1 if y >= sum(taken) / len(taken) else -(metrics.height() + 1)
-            taken.append(y)
-            tag = QRectF(right + 1, y - metrics.height() / 2, gutter - 2, metrics.height())
-            painter.fillRect(tag, self.p.series[key])
-            painter.setPen(self.p.on_fill)
-            painter.drawText(tag, Qt.AlignmentFlag.AlignCenter, f"{getattr(last, key):.1f}")
-
         if self.hover_x is not None:
-            self._paint_crosshair(painter, metrics, readings, x_of, y_of, now, (left, right, top, bottom), gutter)
+            self._paint_hover(painter, metrics, readings, x_of, y_of, shown_now, (left, right, top, bottom))
 
-    def _paint_crosshair(self, painter, metrics, readings, x_of, y_of, now, bounds, gutter) -> None:
+    def _paint_hover(self, painter, metrics, readings, x_of, y_of, shown_now, bounds) -> None:
         left, right, top, bottom = bounds
-        nearest = min(readings, key=lambda r: abs(x_of(r) - self.hover_x))
-        x = x_of(nearest)
+        visible = [r for r in readings if r.t <= shown_now]
+        if not visible:
+            return
+        nearest = min(visible, key=lambda r: abs(x_of(r.t) - self.hover_x))
+        x = x_of(nearest.t)
         if abs(x - self.hover_x) > 12:
             return
-        y = y_of(nearest.cpu)
-        painter.setPen(QPen(self.p.dim, 1, Qt.PenStyle.DashLine))
-        painter.drawLine(x, top, x, bottom)
-        painter.drawLine(left, y, right, y)
+        line = QColor(self.p.dim)
+        line.setAlpha(110)
+        painter.setPen(QPen(line, 1))
+        painter.drawLine(QPointF(x, top), QPointF(x, bottom))
         for key in ("cpu", "gpu", "ram"):
             value = getattr(nearest, key)
             if value is not None:
-                painter.fillRect(QRectF(x - 2, y_of(value) - 2, 5, 5), self.p.series[key])
-        # Readout box at the top, and the time on the axis below the line.
-        ago = int(now - nearest.t)
-        gpu = f"{nearest.gpu:5.1f}" if nearest.gpu is not None else "    —"
-        ram = f"{nearest.ram:.1f}" if nearest.ram is not None else "—"
-        text = f"CPU {nearest.cpu:.1f}  GPU {gpu.strip()}  MEM {ram}"
-        box = QRectF(0, top, metrics.horizontalAdvance(text) + 10, metrics.height() + 4)
-        box.moveLeft(x + 4 if x + 4 + box.width() <= right else x - 4 - box.width())
-        painter.fillRect(box, self.p.hover)
+                painter.setPen(QPen(self.p.panel, 1.5))
+                painter.setBrush(self.p.series[key])
+                painter.drawEllipse(QPointF(x, y_of(value)), 3, 3)
+        parts = [f"CPU {nearest.cpu:.0f}%"]
+        if nearest.gpu is not None:
+            parts.append(f"GPU {nearest.gpu:.0f}%")
+        ram = self._gb(nearest.ram)
+        if ram is not None:
+            parts.append(f"{ram:.1f} GB")
+        ago = max(0, int(self.history.latest().t - nearest.t)) if self.history.latest() else 0
+        parts.append("now" if ago < 2 else f"{ago} s ago")
+        text = "  ·  ".join(parts)
+        box = QRectF(0, top, metrics.horizontalAdvance(text) + 14, metrics.height() + 8)
+        box.moveLeft(x + 8 if x + 8 + box.width() <= right else x - 8 - box.width())
         painter.setPen(QPen(self.p.frame, 1))
-        painter.drawRect(box.adjusted(0, 0, -1, -1))
+        painter.setBrush(self.p.hover)
+        painter.drawRoundedRect(box, style.RADIUS_S, style.RADIUS_S)
         painter.setPen(self.p.text)
         painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
-        stamp = f"-{ago // 60}:{ago % 60:02d}"
-        tag = QRectF(x - 22, bottom + 3, 44, metrics.height() + 1)
-        painter.fillRect(tag, self.p.series["cpu"])
-        painter.setPen(self.p.on_fill)
-        painter.drawText(tag, Qt.AlignmentFlag.AlignCenter, stamp)
 
 
 def _runs(readings: list[Reading], key: str) -> list[list[Reading]]:
@@ -384,17 +360,20 @@ def _smooth(points: list[QPointF]) -> QPainterPath:
     return path
 
 
+def _until(points: list[tuple[float, float]], end: float) -> list[tuple[float, float]]:
+    """The points up to ``end``, the last one interpolated on the way to the next reading."""
+    shown = [p for p in points if p[0] <= end]
+    later = [p for p in points if p[0] > end]
+    if shown and later:
+        (t0, v0), (t1, v1) = shown[-1], later[0]
+        share = (end - t0) / (t1 - t0)
+        shown.append((end, v0 + (v1 - v0) * share))
+    return shown
+
+
 def _number(value: float) -> str:
     """One decimal, except at 100 where the column has no room for it."""
     return f"{value:.0f}" if value >= 99.95 else f"{value:.1f}"
-
-
-def _change(readings: list[Reading], key: str, now: float) -> float | None:
-    """The latest value minus the one about a minute ago (the oldest within the minute)."""
-    values = [(r.t, getattr(r, key)) for r in readings if getattr(r, key) is not None and now - r.t <= 60]
-    if len(values) < 2:
-        return None
-    return values[-1][1] - values[0][1]
 
 
 def _stats(readings: list[Reading], key: str) -> tuple[float, float, float] | None:

@@ -271,15 +271,15 @@ class UsageChartTests(unittest.TestCase):
             chart._tick()
         self.assertAlmostEqual(chart.shown["cpu"], 50, delta=0.5)
 
-    def test_change_and_range_over_the_window(self):
-        from universe.ui.usage_chart import Reading, _change, _stats
+    def test_range_and_the_growing_head_of_a_line(self):
+        from universe.ui.usage_chart import Reading, _stats, _until
 
-        now = 1000.0
-        readings = [Reading(now - 90, 80, None, 50), Reading(now - 50, 20, 5, 50), Reading(now, 35, 9, 50)]
-        self.assertEqual(_change(readings, "cpu", now), 15)  # against the oldest within the last minute
-        self.assertEqual(_change(readings, "gpu", now), 4)
+        readings = [Reading(0, 80, None, 50), Reading(40, 20, 5, 50), Reading(90, 35, 9, 50)]
         self.assertEqual(_stats(readings, "cpu"), (80, 20, 45))
         self.assertIsNone(_stats(readings[:1], "gpu"))
+        # Half-way between two readings the line has grown half of the next segment.
+        self.assertEqual(_until([(0, 10), (2, 30)], 1), [(0, 10), (1, 20.0)])
+        self.assertEqual(_until([(0, 10), (2, 30)], 5), [(0, 10), (2, 30)])
 
     def test_popup_is_a_panel_in_the_window_and_closes_like_a_popover(self):
         from PySide6.QtCore import QPointF
