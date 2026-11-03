@@ -119,7 +119,8 @@ class SidebarDropTests(unittest.TestCase):
     def test_drop_target_is_another_lecture(self):
         workspace = Workspace(Path(tempfile.mkdtemp()))
         subject = workspace.create_subject("Mathe")
-        week1, week2 = subject.create_lecture("Week 1"), subject.create_lecture("Week 2")
+        week1 = subject.create_lecture("Week 1")
+        subject.create_lecture("Week 2")
         audio = week1.dir("audio") / "A.wav"
         audio.write_bytes(b"")
         sidebar = Sidebar(workspace)

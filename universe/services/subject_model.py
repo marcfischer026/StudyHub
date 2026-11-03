@@ -103,9 +103,9 @@ class IdRegistry:
         data = {}
         for manifest in sorted((self.path.parent / "exports").glob("*.json")):
             exported = read_json(manifest)
-            for kind, field in (("documents", "key"), ("lectures", "uid"), ("recordings", "uid")):
+            for kind, id_key in (("documents", "key"), ("lectures", "uid"), ("recordings", "uid")):
                 for ref, info in exported.get(kind, {}).items():
-                    data.setdefault(kind, {}).setdefault(info[field], int(re.sub(r"\D", "", ref)))
+                    data.setdefault(kind, {}).setdefault(info[id_key], int(re.sub(r"\D", "", ref)))
         return data
 
     def number(self, kind: str, key: str) -> int:

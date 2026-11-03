@@ -20,7 +20,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint
 from PySide6.QtGui import QCursor
 
 from ._mac_toolbar import _ns_color, _symbol
-from .floating import DIVIDER, LOW, MUST, Button, Menu, Slider, Text
+from .floating import DIVIDER, LOW, MUST, Menu, Slider, Text
 
 HEIGHT = 36  # points; the capsule's corners are half of it
 MARGIN = 14  # above the host's bottom edge

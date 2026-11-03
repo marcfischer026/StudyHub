@@ -1,0 +1,7 @@
+# Lint for real errors only (undefined names, unused imports, syntax). Style is left to review.
+line-length = 120
+target-version = "py311"
+extend-exclude = [".venv"]
+
+[lint]
+select = ["E9", "F"]

@@ -190,7 +190,6 @@ class Ui9SearchClearTests(unittest.TestCase):
         self.assertEqual(self.panel.results.count(), 0)
 class Ui6ScrollDebounceTests(unittest.TestCase):
     def test_scrolled_past_pages_do_not_emit_until_settled(self):
-        import time
         import pymupdf
         from PySide6.QtTest import QTest
         from universe.ui.pdf_viewer import PdfViewer

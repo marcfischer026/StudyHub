@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMenu,
     QSizePolicy,
     QTextEdit,
     QToolBar,

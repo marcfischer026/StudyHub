@@ -18,7 +18,6 @@ import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from pathlib import Path
 
 from ..professors import ProfessorStore
 from ..storage import Subject, atomic_write_text, read_json, write_json

@@ -75,7 +75,6 @@ class MockPendingTests(unittest.TestCase):
 
 class PastExamTests(unittest.TestCase):
     def test_past_exam_clamps_days_and_hides_recall(self):
-        from datetime import date
 
         k = knowledge([objective("o1")], [question("q1", "o1")])
         yesterday = (NOW - timedelta(days=1)).date()

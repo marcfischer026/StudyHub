@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import universe  # noqa: E402,F401
 from universe.config import Settings, settings_path  # noqa: E402
 from universe.professors import ProfessorStore  # noqa: E402
-from universe.services import api_mode, pdf_conversion, subject_model  # noqa: E402
+from universe.services import api_mode, subject_model  # noqa: E402
 from universe.services.study_store import StudyStore  # noqa: E402
 from universe.storage import Workspace  # noqa: E402
 from universe.ui.claude_panel import ClaudePanel  # noqa: E402
