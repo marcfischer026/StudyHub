@@ -271,6 +271,36 @@ class UsageChartTests(unittest.TestCase):
             chart._tick()
         self.assertAlmostEqual(chart.shown["cpu"], 50, delta=0.5)
 
+    def test_chart_paints_with_history_before_its_first_snapshot(self):
+        from PySide6.QtGui import QImage, QPainter
+
+        from universe.ui.usage_chart import UsageChart, UsageHistory, palette
+
+        history = UsageHistory()
+        now = time.monotonic()
+        for i in range(5):
+            history.add(Snapshot(cpu=20, gpu=10, ram_used=55), t=now - 10 + 2 * i)
+        chart = UsageChart(history)  # no update_from yet: the total memory is unknown
+        chart.resize(380, chart.sizeHint().height())
+        chart.p = palette()
+        image = QImage(chart.size(), QImage.Format.Format_ARGB32)
+        painter = QPainter(image)
+        try:
+            chart._paint_quotes(painter, *chart._fonts(), list(history.readings), now)
+        finally:
+            painter.end()
+
+    def test_range_line_fits_its_column(self):
+        from PySide6.QtGui import QFont, QFontMetricsF
+
+        from universe.ui.usage_chart import _fit_stats
+
+        metrics = QFontMetricsF(QFont("Menlo", 10))
+        self.assertEqual(_fit_stats((12.5, 12.3, 12.4), 1, metrics, 1000), "H 12.5  L 12.3  Ø 12.4")
+        narrow = _fit_stats((12.5, 12.3, 12.4), 1, metrics, metrics.horizontalAdvance("H 12.5  L 12.3"))
+        self.assertEqual(narrow, "H 12.5  L 12.3")  # the average goes before anything gets cut
+        self.assertEqual(_fit_stats(None, 0, metrics, 100), "")
+
     def test_range_and_the_growing_head_of_a_line(self):
         from universe.ui.usage_chart import Reading, _stats, _until
 

@@ -187,8 +187,11 @@ class UsageChart(QWidget):
         small, label, value = self._fonts()
         now = time.monotonic()
         readings = [r for r in self.history.readings if now - r.t <= WINDOW + GAP]
-        self._paint_quotes(painter, small, label, value, readings, now)
-        self._paint_plot(painter, small, readings, now)
+        try:
+            self._paint_quotes(painter, small, label, value, readings, now)
+            self._paint_plot(painter, small, readings, now)
+        finally:  # an active painter left behind breaks every later paint of the window
+            painter.end()
 
     def _paint_quotes(self, painter: QPainter, small: QFont, label: QFont, value: QFont, readings, now: float) -> None:
         snap = self.snapshot
@@ -212,7 +215,9 @@ class UsageChart(QWidget):
             painter.setPen(self.p.dim)
             painter.drawText(inner.adjusted(11, 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, name)
             painter.setFont(small)
-            painter.drawText(inner, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, notes[key])
+            room = inner.width() - 11 - QFontMetricsF(label).horizontalAdvance(name) - 6
+            if QFontMetricsF(small).horizontalAdvance(notes[key]) <= room:  # left out rather than over the name
+                painter.drawText(inner, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, notes[key])
             # The value, with its unit small beside it.
             painter.setFont(value)
             metrics = QFontMetricsF(value)
@@ -228,10 +233,11 @@ class UsageChart(QWidget):
             stats = _stats(readings, key)
             if key == "ram" and stats:
                 stats = tuple(self._gb(v) for v in stats)
+                if None in stats:  # the total isn't known before the first snapshot
+                    stats = None
             painter.setFont(small)
             painter.setPen(self.p.dim)
-            digits = 1 if key == "ram" else 0
-            line = f"H {stats[0]:.{digits}f}  L {stats[1]:.{digits}f}  Ø {stats[2]:.{digits}f}" if stats else ""
+            line = _fit_stats(stats, 1 if key == "ram" else 0, QFontMetricsF(small), inner.width())
             painter.drawText(inner, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, line)
 
     def _paint_plot(self, painter: QPainter, small: QFont, readings, now: float) -> None:
@@ -273,7 +279,7 @@ class UsageChart(QWidget):
         painter.drawText(axis, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, "now")
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if not readings:
+        if not any(r.t <= shown_now for r in readings):  # drawn a reading behind: nothing to show yet
             painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Measuring…")
             return
 
@@ -404,6 +410,15 @@ def _until(points: list[tuple[float, float]], end: float) -> list[tuple[float, f
         share = (end - t0) / (t1 - t0)
         shown.append((end, v0 + (v1 - v0) * share))
     return shown
+
+
+def _fit_stats(stats: tuple[float, float, float] | None, digits: int, metrics: QFontMetricsF, width: float) -> str:
+    """High, low and average in the column's width: tighter spacing first, then without the average."""
+    if not stats:
+        return ""
+    high, low, mean = (f"{v:.{digits}f}" for v in stats)
+    candidates = (f"H {high}  L {low}  Ø {mean}", f"H {high} L {low} Ø {mean}", f"H {high}  L {low}", f"H {high} L {low}")
+    return next((line for line in candidates if metrics.horizontalAdvance(line) <= width), candidates[-1])
 
 
 def _number(value: float) -> str:
