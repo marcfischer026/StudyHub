@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -35,22 +35,24 @@ HISTORY_CHARS = 6000  # the latest turns that still fit next to the passages
 MAX_TOKENS = 900
 
 BASE = """You are a patient, encouraging tutor for the university course "{subject}".{topic_sentence}
-Answer in the language the student writes in. Keep each reply short: a few sentences or a short list, \
+Speak the language of the course material below, unless the student types their own messages in \
+another language; then follow them. Keep each reply short: a few sentences or a short list, \
 then stop. Use the course material below and cite it as [1], [2], … right after what it supports. \
 When the material does not cover something, say so and explain from general knowledge, marked as such. \
 Never invent what the lecturer said."""
 
 STYLE = {
-    "explain": """The student asks questions. Explain clearly with one concrete example, then ask whether \
-it is clear or which part to go deeper on.""",
+    "explain": """The student asks questions. Explain clearly with one concrete example, then offer \
+one short question to check it, or ask which part to go deeper on.""",
     "quiz": """Teach in small steps and check understanding as you go: explain one idea briefly, then ask \
-ONE question about it and wait. When the student answers, say plainly whether it is right, correct \
+ONE question about it and wait. Never ask "does that make sense?" or "is that clear?": ask about the content. When the student answers, say plainly whether it is right, correct \
 what is wrong in one or two sentences, and continue with the next small idea and question. \
 Mix question types (why, example, calculation, true or false). Do not give the answer in the question.""",
     "zero": """The student knows nothing about this yet. Start from the very basics: first ask in one \
 sentence what they already know, if anything. Then build up step by step: plain words before \
 technical terms, define every term the first time, use everyday analogies, one idea per reply. \
-After each idea ask a very easy check question. Only move on once they got it; if not, explain \
+After each idea ask a very easy check question about its content (an example, a "which of these", \
+a yes/no with a reason), never just "does that make sense?". Only move on once they got it; if not, explain \
 again differently. Now and then show where they are on the path (e.g. "Step 2 of 5: …").""",
 }
 
@@ -63,6 +65,14 @@ OPENERS = {
     "zero": "I know nothing about {topic} yet. Start from zero with me.",
 }
 WHOLE_COURSE = "this course"
+OPENERS_DE = {
+    "explain": "Erklär mir {topic}.",
+    "quiz": "Bring mir {topic} bei und frag mich zwischendurch ab.",
+    "zero": "Ich weiß noch nichts über {topic}. Fang mit mir bei null an.",
+}
+WHOLE_COURSE_DE = "diesen Kurs"
+_GERMAN = re.compile(r"\b(der|die|das|und|ist|nicht|mit|für|eine?|werden|auf|sich|zu|den|von)\b", re.IGNORECASE)
+_ENGLISH = re.compile(r"\b(the|and|is|not|with|for|an?|are|on|to|of|this|that)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -70,6 +80,7 @@ class Turn:
     role: str  # "user" or "assistant"
     text: str
     sources: list[Hit] = field(default_factory=list)  # the passages the tutor saw, numbered from 1
+    auto: bool = False  # written by the app's Start button, not typed by the student
 
     def cited(self) -> list[int]:
         """The passage numbers the reply points at; all of them when it cites none."""
@@ -84,8 +95,23 @@ def topic_titles(topics: dict) -> list[str]:
     return [str(t["title"]) for t in ranked if t.get("title")]
 
 
-def opener(mode: str, topic: str) -> str:
+def opener(mode: str, topic: str, german: bool = False) -> str:
+    if german:
+        return OPENERS_DE[mode].format(topic=topic or WHOLE_COURSE_DE)
     return OPENERS[mode].format(topic=topic or WHOLE_COURSE)
+
+
+def is_german(hits: list[Hit]) -> bool:
+    """Whether the passages read as German: a small model answers in the language it is spoken to."""
+    text = " ".join(hit.text for hit in hits)
+    return len(_GERMAN.findall(text)) > len(_ENGLISH.findall(text))
+
+
+def _in_course_language(mode: str, topic: str, history: list[Turn], hits: list[Hit]) -> list[Turn]:
+    """The Start button's opener, reworded in German when the material is German."""
+    if history and history[0].auto and hits and is_german(hits):
+        return [replace(history[0], text=opener(mode, topic, german=True)), *history[1:]]
+    return history
 
 
 def system_prompt(mode: str, subject: str, topic: str, hits: list[Hit]) -> str:
@@ -114,10 +140,11 @@ def messages_for(mode: str, subject: str, topic: str, history: list[Turn], hits:
     return [{"role": "system", "content": system_prompt(mode, subject, topic, hits)}, *kept]
 
 
-def search_query(topic: str, history: list[Turn]) -> str:
-    """What to look up: the topic and the latest exchange, so "why?" still finds the right passages."""
-    recent = [t.text for t in history[-2:]]
-    return " ".join(part for part in (topic, *recent) if part)[-1000:]
+def search_query(subject: str, topic: str, history: list[Turn]) -> str:
+    """What to look up: the topic (or the course) and the latest exchange, so "why?" still finds the
+    right passages. The Start button's own words would only find pages that say "start"."""
+    recent = [t.text for t in history[-2:] if not t.auto]
+    return " ".join(part for part in (topic or subject, *recent) if part)[-1000:]
 
 
 def reply(mode: str, subject: str, topic: str, history: list[Turn], settings: Settings, search: Callable[[str], list[Hit]] | None = None) -> Turn:
@@ -125,11 +152,11 @@ def reply(mode: str, subject: str, topic: str, history: list[Turn], settings: Se
     hits: list[Hit] = []
     if search is not None:
         try:
-            hits = search(search_query(topic, history))[:SOURCES]
+            hits = search(search_query(subject, topic, history))[:SOURCES]
         except Exception:  # no index yet: the tutor still talks, just without citations
             hits = []
     url, model = local_llm.find_server(settings)
-    messages = messages_for(mode, subject, topic, history, hits)
+    messages = messages_for(mode, subject, topic, _in_course_language(mode, topic, history, hits), hits)
     text = local_llm.complete(url, model, messages, timeout=300, ttl=settings.local_llm_unload_after, temperature=0.4, max_tokens=MAX_TOKENS)
     text = _drop_unknown_citations(text, len(hits)) or "(The local AI sent an empty reply. Try asking again.)"
     return Turn("assistant", text, hits)
@@ -147,6 +174,7 @@ def log_turn(subject: Subject, chat_id: str, mode: str, topic: str, turn: Turn) 
         "mode": mode,
         "topic": topic,
         "role": turn.role,
+        "auto": turn.auto,
         "text": turn.text,
         "sources": [f"[{n}] {_label(turn.sources[n - 1])}" for n in turn.cited()],
     }
@@ -198,6 +226,8 @@ def render_chats(subject: Subject, limit: int) -> str:
         lines = [title, ""]
         for turn in turns:
             text = " ".join(str(turn["text"]).split())
+            if turn.get("auto"):
+                continue  # the Start button's words; the heading names the way of learning
             if turn["role"] == "user":
                 lines.append(f"ME: {text}")
             else:

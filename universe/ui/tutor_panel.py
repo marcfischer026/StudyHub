@@ -111,7 +111,7 @@ class TutorPanel(ScopedPanel):
     def start(self) -> None:
         """A fresh chat that opens with the chosen way of learning."""
         self.new_chat()
-        self._ask(tutor.opener(self.mode_key, self.topic_text))
+        self._ask(tutor.opener(self.mode_key, self.topic_text), auto=True)
 
     def send(self) -> None:
         text = self.input.text().strip()
@@ -119,10 +119,10 @@ class TutorPanel(ScopedPanel):
             self.input.clear()
             self._ask(text)
 
-    def _ask(self, text: str) -> None:
+    def _ask(self, text: str, auto: bool = False) -> None:
         if self.subject is None:
             return
-        turn = tutor.Turn("user", text)
+        turn = tutor.Turn("user", text, auto=auto)
         self.history.append(turn)
         self._log(turn)
         self._set_busy(True)

@@ -89,6 +89,32 @@ class PromptTests(unittest.TestCase):
             turn = tutor.reply("explain", "Finanzen", "", [tutor.Turn("user", "Hi")], Settings(), search=lambda q: HITS[:1])
         self.assertEqual(turn.text, "Ein Foto [1], siehe.")
 
+    def test_the_search_skips_the_start_button_and_falls_back_to_the_course(self):
+        history = [tutor.Turn("user", tutor.opener("zero", ""), auto=True)]
+        self.assertEqual(tutor.search_query("Finanzbuchführung", "", history), "Finanzbuchführung")
+        history += [tutor.Turn("assistant", "Was weißt du schon?"), tutor.Turn("user", "Etwas über Konten")]
+        self.assertEqual(tutor.search_query("Finanzbuchführung", "Bilanz", history), "Bilanz Was weißt du schon? Etwas über Konten")
+
+    def test_the_start_button_speaks_german_to_german_material(self):
+        seen = {}
+
+        def complete(url, model, messages, **kwargs):
+            seen["first"] = messages[1]["content"]
+            return "Hallo"
+
+        history = [tutor.Turn("user", tutor.opener("zero", "Bilanz"), auto=True)]
+        with mock.patch.object(local_llm, "find_server", return_value=("http://x", "m")), mock.patch.object(local_llm, "complete", complete):
+            tutor.reply("zero", "Finanzen", "Bilanz", history, Settings(), search=lambda q: HITS)
+            self.assertEqual(seen["first"], "Ich weiß noch nichts über Bilanz. Fang mit mir bei null an.")
+            english = [Hit("L1", "slides", "p.1", "The balance sheet shows where the money comes from and what it is used for.", score=1.0)]
+            tutor.reply("zero", "Finanzen", "Bilanz", history, Settings(), search=lambda q: english)
+            self.assertEqual(seen["first"], history[0].text)
+
+    def test_the_tutor_speaks_the_material_and_asks_real_checks(self):
+        prompt = tutor.system_prompt("zero", "Finanzen", "", HITS)
+        self.assertIn("language of the course material", prompt)
+        self.assertIn('never just "does that make sense?"', prompt)
+
     def test_topics_most_important_first(self):
         topics = {"a": {"title": "Nebensache", "importance": 1}, "b": {"title": "Bilanz", "importance": 3}, "c": {"importance": 3}}
         self.assertEqual(tutor.topic_titles(topics), ["Bilanz", "Nebensache"])
@@ -120,6 +146,13 @@ class ChatExportTests(unittest.TestCase):
         self.assertIn("1 older chat left out", text)
         self.assertNotIn("x" * tutor.REPLY_CHARS, text)
 
+    def test_the_start_button_is_not_shown_as_my_words(self):
+        tutor.log_turn(self.subject, "c", "zero", "", tutor.Turn("user", "Start from zero with me.", auto=True))
+        tutor.log_turn(self.subject, "c", "zero", "", tutor.Turn("assistant", "Was weißt du schon?"))
+        text = tutor.render_chats(self.subject, 10_000)
+        self.assertNotIn("Start from zero with me", text)
+        self.assertIn("TUTOR: Was weißt du schon?", text)
+
     def test_nothing_logged_or_a_broken_line(self):
         self.assertEqual(tutor.render_chats(self.subject, 10_000), "")
         self.log("c", "Frage", "Antwort")
@@ -150,6 +183,7 @@ class TutorTabTests(unittest.TestCase):
         self.assertIn("Wie heißen sie?", self.panel.browser.toPlainText())
         records = [json.loads(line) for line in tutor.log_path(self.subject).read_text(encoding="utf-8").splitlines()]
         self.assertEqual([(r["mode"], r["topic"], r["role"]) for r in records], [("zero", "Bilanz", "user"), ("zero", "Bilanz", "assistant")])
+        self.assertEqual([r["auto"] for r in records], [True, False])
         self.assertEqual(records[1]["sources"], ["[1] Woche 1 · slides · VL p.2"])
 
     def test_a_cited_source_jumps_like_a_search_hit(self):
