@@ -79,6 +79,19 @@ class ParseTests(unittest.TestCase):
         self.assertIn("Kasse & Bank", pages[1].markdown)
 
 
+    def test_mineru_progress_comes_from_its_latest_bar(self):
+        log = "Predict:   0%|          | 0/38 [00:00<?, ?it/s]\rPredict:  37%|███▋      | 14/38 [01:39<02:43,  6.83s/it]"
+        self.assertEqual(local_conversion.mineru_progress(log), (14, 38))
+        self.assertIsNone(local_conversion.mineru_progress("Using transformers as the inference engine"))
+
+    def test_a_running_converter_reports_its_log(self):
+        folder = Path(tempfile.mkdtemp())
+        seen = []
+        with mock.patch.object(local_conversion, "POLL_SECONDS", 0.05):
+            local_conversion._run([sys.executable, "-c", "import time; print('Predict: 50%|##| 1/2', flush=True); time.sleep(0.5)"], folder / "x.log", None, seen.append)
+        self.assertTrue(any("1/2" in tail for tail in seen))
+
+
 class PickTests(unittest.TestCase):
     RAW = "Aus (VI) folgt, dass ݒଷ= 1. Eingesetzt in (IV) erhalten wir 9 und 12 als Lösung der Gleichung."
 

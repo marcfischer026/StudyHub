@@ -321,7 +321,7 @@ def _load_pages(subject: Subject, primary: Path, copies: list[Path], key: str) -
     for copy in copies:
         for number, marks in pdf_tools.page_marks(copy).items():
             extra_marks[number] = extra_marks.get(number, ()) + marks
-    common = pdf_conversion.common_numbers([c.text for c in contents])
+    common = pdf_conversion.common_terms([c.text for c in contents])
     offset = pdf_conversion.printed_page_offset([c.text for c in contents])
     pages = []
     for content in contents:
@@ -732,7 +732,7 @@ def best_pages(document: Document, subject: Subject) -> list[tuple[int, str]]:
     except Exception:  # load_subject reports it
         return []
     converted = pdf_conversion.load_pages(subject, key)
-    common, offset = pdf_conversion.common_numbers(texts), pdf_conversion.printed_page_offset(texts)
+    common, offset = pdf_conversion.common_terms(texts), pdf_conversion.printed_page_offset(texts)
     pages = []
     for number, text in enumerate(texts, start=1):
         markdown = converted.get(number, "")

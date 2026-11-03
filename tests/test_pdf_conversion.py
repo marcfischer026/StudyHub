@@ -158,14 +158,21 @@ class CheckTests(unittest.TestCase):
         self.assertIn("scan", result.describe())
 
     def test_footer_numbers_and_the_page_number_may_go(self):
-        common = pdf_conversion.common_numbers(["WS 2026 a", "WS 2026 b", "WS 2026 c", "WS 2026 d 7"])
+        common = pdf_conversion.common_terms(["WS 2026 a", "WS 2026 b", "WS 2026 c", "WS 2026 d 7"])
         self.assertEqual(common, frozenset({"2026"}))
         self.assertEqual(pdf_conversion.printed_page_offset([f"Folie {n + 1}" for n in range(1, 7)]), 1)
         self.assertEqual(pdf_conversion.printed_page_offset(["Bilanz 1200", "Aktiva", "Passiva", "Umlauf 77"]), 0)
         self.assertEqual(pdf_conversion.printed_page_offset([f"Technik {n + 23}" for n in range(1, 10)]), 23)  # the second block of a lecture
         self.assertTrue(check_page("Bilanz 8", "Bilanz", page=7, printed_offset=1).ok)
         self.assertFalse(check_page("Bilanz 9", "Bilanz", page=7, printed_offset=1).ok)
-        self.assertTrue(check_page("Bilanz 2026 7", "Bilanz", page=7, common_numbers=common).ok)
+        self.assertTrue(check_page("Bilanz 2026 7", "Bilanz", page=7, common=common).ok)
+
+    def test_a_running_header_may_go(self):
+        pages = [f"Prof. Dr. Christian Weitert | WS 2026\nThema{c}" for c in "abcd"]
+        common = pdf_conversion.common_terms(pages)
+        self.assertTrue({"christian", "weitert", "prof", "2026"} <= common)
+        self.assertTrue(check_page(pages[0], "## Themaa", page=1, common=common).ok)
+        self.assertFalse(check_page(pages[0] + " Umsatz Gewinn Kosten", "## Themaa", page=1, common=common).ok)
 
 
 class ImportTests(Fixture):

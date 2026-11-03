@@ -14,6 +14,6 @@ VIRTUAL_ENV="$root/marker" uv pip install -q "marker-pdf>=2.1,<3"
 
 # MinerU 2: a plain offline converter. MinerU 4 is a document-library server instead.
 uv venv -q --allow-existing --python 3.12 "$root/mineru"
-VIRTUAL_ENV="$root/mineru" uv pip install -q "mineru[core]>=2.5,<3"
+VIRTUAL_ENV="$root/mineru" uv pip install -q "mineru[core,mlx]>=2.5,<3"  # mlx: Apple GPU, many times faster than transformers
 
 echo "Installed in $root"

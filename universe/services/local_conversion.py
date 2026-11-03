@@ -53,12 +53,14 @@ SECOND_OPINION = (MATH, TABLE)  # page kinds MinerU always reads too
 CHUNK_PAGES = 40  # one converter run: loading the models costs a minute, a stop loses at most this
 MINERU_MARGIN = 0.02  # MinerU must beat Marker by this much; small differences are noise
 LOG_TAIL = 1500
+POLL_SECONDS = 3  # how often a running converter's log is read for progress
 
 _MATH_FONT = re.compile(r"math|cmmi|cmsy|cmex|symbol|stix|mt ?extra|euler|msbm|msam", re.IGNORECASE)
 _MATH_CHAR = re.compile(r"[∑∏∫√∞≤≥≠≈∂∇∈∉⊂⊆∪∩⇒⇔±÷αβγδεθμσφωΔΣΩ²³ⁿ₀-₉]")
 _MARKER_PAGE = re.compile(r"^\{(\d+)\}-{10,}\s*$", re.MULTILINE)
 _IMAGE_LINK = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 _SPACED_TEXT = re.compile(r"\\text\s*\{((?:\S ){2,}\S)\s*\}")  # MinerU's "\text {G a u ß}"
+_TQDM = re.compile(r"Predict:\s*\d+%\|[^|]*\|\s*(\d+)/(\d+)")  # MinerU's progress bars, one per pass
 
 
 class ConverterError(RuntimeError):
@@ -169,13 +171,20 @@ def pick(raw_text: str, versions: dict[str, str], page: int, common: frozenset[s
 # --- running a converter -----------------------------------------------------
 
 
-def _run(command: list[str], log: Path, control: JobControl | None) -> None:
+def _run(command: list[str], log: Path, control: JobControl | None, watch: Callable[[str], None] | None = None) -> None:
+    """``watch`` sees the end of the log every few seconds while the converter runs."""
     with log.open("w", encoding="utf-8", errors="replace") as out:
         proc = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=_environment(), cwd=log.parent)
         if control is not None:
             control.register_process(proc)
         try:
-            code = proc.wait()
+            while True:
+                try:
+                    code = proc.wait(timeout=POLL_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    if watch is not None:
+                        watch(_log_tail(log))
         finally:
             if control is not None:
                 control.unregister_process(proc)
@@ -184,6 +193,18 @@ def _run(command: list[str], log: Path, control: JobControl | None) -> None:
     if code:
         tail = log.read_text(encoding="utf-8", errors="replace")[-LOG_TAIL:]
         raise ConverterError(f"{Path(command[0]).name} stopped with code {code}:\n{tail}")
+
+
+def _log_tail(log: Path) -> str:
+    with log.open("rb") as f:
+        f.seek(max(0, log.stat().st_size - LOG_TAIL))
+        return f.read().decode("utf-8", errors="replace")
+
+
+def mineru_progress(log_tail: str) -> tuple[int, int] | None:
+    """``(done, total)`` of MinerU's latest progress bar: first over the pages, then over their blocks."""
+    bars = _TQDM.findall(log_tail)
+    return tuple(map(int, bars[-1])) if bars else None
 
 
 def _subset(source: pymupdf.Document, pages: list[int], target: Path) -> None:
@@ -257,10 +278,19 @@ def run_marker(pdf: Path, work: Path, control: JobControl | None = None) -> dict
     return parse_marker(found.read_text(encoding="utf-8"), found.parent)
 
 
-def run_mineru(pdf: Path, work: Path, control: JobControl | None = None) -> dict[int, _Page]:
+def run_mineru(pdf: Path, work: Path, control: JobControl | None = None, progress: Progress = lambda _t: None, pages: int = 0) -> dict[int, _Page]:
     out = work / "mineru"
     out.mkdir(parents=True, exist_ok=True)
-    _run([str(executable(MINERU)), "-p", str(pdf), "-o", str(out), "-b", "vlm-auto-engine", "-l", "latin"], work / "mineru.log", control)
+    shown = [None]
+
+    def watch(tail: str) -> None:
+        found = mineru_progress(tail)
+        if found and found != shown[0]:
+            shown[0] = found
+            done, total = found
+            progress(f"MinerU: page {done} of {total}…" if total == pages else f"MinerU: reading the pages' text, {done} of {total} blocks…")
+
+    _run([str(executable(MINERU)), "-p", str(pdf), "-o", str(out), "-b", "vlm-auto-engine", "-l", "latin"], work / "mineru.log", control, watch)
     found = next(iter(sorted(out.rglob("*_content_list.json"))), None)
     if found is None:
         raise ConverterError("MinerU wrote no content list.")
@@ -295,7 +325,7 @@ def convert_pages(document: "DocumentView", pages: list[int], figures: Path, con
         if not raw:
             raw = {n: source[n - 1].get_text() for n in range(1, source.page_count + 1)}
         kinds = {n: classify(source[n - 1]) for n in pages}
-        common = pdf_conversion.common_numbers(list(raw.values()))
+        common = pdf_conversion.common_terms(list(raw.values()))
         offset = pdf_conversion.printed_page_offset([raw.get(n, "") for n in range(1, source.page_count + 1)])
         progress(f"{document.ref}: Marker reads {len(pages)} page(s)…")
         _subset(source, pages, work / "marker.pdf")
@@ -310,7 +340,7 @@ def convert_pages(document: "DocumentView", pages: list[int], figures: Path, con
         if second:
             progress(f"{document.ref}: MinerU reads {len(second)} page(s) with formulas, tables or doubts…")
             _subset(source, second, work / "mineru.pdf")
-            mineru = run_mineru(work / "mineru.pdf", work, control)
+            mineru = run_mineru(work / "mineru.pdf", work, control, lambda text: progress(f"{document.ref}: {text}"), len(second))
 
         engines, parts = {}, []
         for index, number in enumerate(pages):

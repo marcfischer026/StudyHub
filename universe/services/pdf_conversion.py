@@ -124,28 +124,30 @@ class PageCheck:
         return "; ".join(problems) or "matches the PDF"
 
 
-def check_page(raw_text: str, markdown: str, page: int = 0, common_numbers: frozenset[str] = frozenset(), printed_offset: int = 0) -> PageCheck:
-    """``common_numbers`` repeat through the document (dates in footers), which the tool may drop,
-    as it may the page's own number, also as printed on the slide (``printed_offset``)."""
+def check_page(raw_text: str, markdown: str, page: int = 0, common: frozenset[str] = frozenset(), printed_offset: int = 0) -> PageCheck:
+    """``common`` words and numbers repeat through the document (the lecturer's name and the date
+    in a running header), which the tool may drop, as it may the page's own number, also as
+    printed on the slide (``printed_offset``)."""
     raw_words = _words(raw_text)
     if not raw_words and not _numbers(raw_text):
         return PageCheck(scanned=True)
     own_text = _LATEX_COMMAND.sub(" ", _FIGURE_LINE.sub("", _IMAGE_LINK.sub("", markdown)))
     words = _words(own_text)
-    coverage = len(raw_words & _words(markdown)) / len(raw_words) if raw_words else 1.0
+    expected = raw_words - common
+    coverage = len(expected & _words(markdown)) / len(expected) if expected else 1.0
     added = len(words - raw_words) / len(words) if words else 0.0
-    ignored = common_numbers | {str(page), str(page + printed_offset)}
+    ignored = common | {str(page), str(page + printed_offset)}
     missing = sorted((_numbers(raw_text) - _numbers(markdown)) - ignored, key=lambda n: (len(n), n))
     return PageCheck(coverage, added, tuple(missing))
 
 
-def common_numbers(raw_texts: list[str]) -> frozenset[str]:
-    """Numbers on more than half of a document's pages."""
+def common_terms(raw_texts: list[str]) -> frozenset[str]:
+    """Words and numbers on more than half of a document's pages: a running header or footer."""
     if len(raw_texts) < 4:
         return frozenset()
     counts: dict[str, int] = {}
     for text in raw_texts:
-        for number in _numbers(text):
+        for number in _numbers(text) | _words(text):
             counts[number] = counts.get(number, 0) + 1
     return frozenset(n for n, count in counts.items() if count > len(raw_texts) / 2)
 
@@ -392,7 +394,7 @@ def import_converted(view: "SubjectView", text: str) -> ConversionReport:
         stored = load_pages(view.subject, document.key) | new_pages
         save_pages(view.subject, document.key, document.title, document.ref, stored)
         raw = {p.number: p.raw_text for p in document.pages} or dict(enumerate(pdf_tools.page_texts(document.path), start=1))
-        common, offset = common_numbers(list(raw.values())), printed_page_offset([raw.get(n, "") for n in range(1, document.page_count + 1)])
+        common, offset = common_terms(list(raw.values())), printed_page_offset([raw.get(n, "") for n in range(1, document.page_count + 1)])
         doc_report = DocumentReport(document.ref, document.title, sorted(new_pages))
         doc_report.missing = [n for n in range(1, document.page_count + 1) if n not in stored]
         for page in sorted(new_pages):
