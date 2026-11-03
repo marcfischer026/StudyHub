@@ -195,6 +195,30 @@ class ConvertTests(Fixture):
         self.assertIn("Bestandsaufnahme", pages[2])  # the better new one replaces it
         self.assertIn("kept the earlier version of p.1", report.summary())
 
+    def test_several_documents_share_one_converter_run_and_progress_covers_the_whole_run(self):
+        make_pdf(self.lecture.dir("slides") / "Eins.pdf", ["Bilanz Aktiva Passiva"])
+        make_pdf(self.lecture.dir("slides") / "Zwei.pdf", ["Inventur Bestandsaufnahme", "Kasse Bank Stichtag"])
+        marker = {0: _Page("Bilanz Aktiva Passiva", {}), 1: _Page("Inventur Bestandsaufnahme", {}), 2: _Page("Kasse Bank Stichtag", {})}
+        seen = []
+        with (
+            mock.patch.object(local_conversion, "installed", return_value=True),
+            mock.patch.object(local_conversion, "executable", return_value=Path("/nonexistent")),
+            mock.patch.object(local_conversion, "run_marker", return_value=marker) as run_marker,
+        ):
+            report = local_conversion.convert_subject(self.view(), progress=seen.append)
+        self.assertEqual(run_marker.call_count, 1)  # the models load once for both PDFs
+        self.assertEqual(sorted(len(d.imported) for d in report.documents), [1, 2])
+        self.assertTrue(seen[0].text.startswith("0% of 3 pages\nMarker reads 3 pages"))
+        self.assertEqual(seen[-1].fraction, 1.0)
+
+    def test_the_time_left_reads_plainly(self):
+        statuses = []
+        tracker = local_conversion._Tracker(100, statuses.append)
+        tracker.started -= 600  # ten minutes in
+        tracker.done = 40
+        tracker.show("Marker reads 40 pages", 0.5, 40)
+        self.assertEqual(statuses[-1].text, "60% of 100 pages · about 7 min left\nMarker reads 40 pages")
+
 class HelperTests(unittest.TestCase):
     def test_only_processes_from_the_converters_folder_are_stopped(self):
         folder = str(local_conversion.converters_dir())

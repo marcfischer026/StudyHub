@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -329,7 +330,7 @@ class ClaudePanel(ScopedPanel):
     conversionsImported = Signal()
     replyImported = Signal()  # or undone: knowledge changed
     apiProgress = Signal(str)  # from a worker thread
-    localProgress = Signal(str)  # from a worker thread
+    localProgress = Signal(object)  # local_conversion.Status, from a worker thread
 
     def __init__(self, professors: ProfessorStore, parent=None, settings: Settings | None = None):
         super().__init__(parent)
@@ -403,7 +404,7 @@ class ClaudePanel(ScopedPanel):
         self.pdf_status = text_label()
         self.export_pdfs_btn = self._button("Export PDFs", self.export_pdfs, primary=True)
         self.export_pdfs_btn.setToolTip("Writes stamped copies, copies the converter prompt and shows the folder")
-        self.localProgress.connect(self.busy.setText)
+        self.localProgress.connect(self._show_local_status)
         self.convert_local_btn = self._button("Convert on this Mac", self.convert_local)
         self.convert_local_btn.setToolTip(
             "Marker and MinerU read the PDFs here, offline; each page keeps the better version"
@@ -417,6 +418,10 @@ class ClaudePanel(ScopedPanel):
         redo_menu.addAction("Every page", lambda: self.convert_local(local_conversion.EVERY))
         self.redo_local_btn.setMenu(redo_menu)
         self.stop_local_btn = self._button("Stop", self.stop_local, hidden=True)
+        self.local_bar = QProgressBar(maximum=1000, textVisible=False)
+        self.local_bar.setObjectName("activityBar")
+        self.local_bar.setFixedHeight(6)
+        self.local_bar.hide()
         self.pdf_report = text_label(selectable=True)
         self.pdf_report.hide()
         self.pdf_folder = FolderLine(self._copy)
@@ -426,6 +431,7 @@ class ClaudePanel(ScopedPanel):
             text_label("Marker and MinerU on this Mac, or Gemini and Copilot, turn the PDFs into Markdown, so Claude reads formulas, tables and graphics too.", muted=True),
             self.pdf_status,
             button_row(self.convert_local_btn, self.redo_local_btn, self.stop_local_btn),
+            self.local_bar,
             button_row(
                 self.export_pdfs_btn,
                 self._button("Paste result", self.paste_conversion),
@@ -704,9 +710,17 @@ class ClaudePanel(ScopedPanel):
             self._local_control.cancel()
             self.busy.setText("Stopping the converters…")
 
+    def _show_local_status(self, status: local_conversion.Status) -> None:
+        if self._local_control is None:
+            return  # a late report from a run that has ended
+        self.busy.setText(status.text)
+        self.local_bar.setValue(round(status.fraction * 1000))
+
     def _set_local_running(self, running: bool) -> None:
         self.convert_local_btn.setEnabled(not running and local_conversion.installed())
         self.stop_local_btn.setVisible(running)
+        self.local_bar.setValue(0)
+        self.local_bar.setVisible(running)
         if running:
             self.redo_local_btn.setEnabled(False)
         else:

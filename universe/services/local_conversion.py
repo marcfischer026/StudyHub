@@ -27,6 +27,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -45,7 +47,7 @@ from .jobcontrol import JobControl
 if TYPE_CHECKING:
     from .subject_model import DocumentView, SubjectView
 
-Progress = Callable[[str], None]
+Progress = Callable[["Status"], None]
 
 MATH, TABLE, TEXT, SCAN = "math", "table", "text", "scan"
 MINERU, MARKER = "mineru", "marker"
@@ -208,9 +210,10 @@ def mineru_progress(log_tail: str) -> tuple[int, int] | None:
     return tuple(map(int, bars[-1])) if bars else None
 
 
-def _subset(source: pymupdf.Document, pages: list[int], target: Path) -> None:
+def _subset(pages: list[tuple[pymupdf.Document, int]], target: Path) -> None:
+    """One PDF of the given pages, which may come from several documents."""
     copy = pymupdf.open()
-    for number in pages:
+    for source, number in pages:
         copy.insert_pdf(source, from_page=number - 1, to_page=number - 1, annots=False)
     copy.save(target, garbage=3, deflate=True)
     copy.close()
@@ -279,19 +282,19 @@ def run_marker(pdf: Path, work: Path, control: JobControl | None = None) -> dict
     return parse_marker(found.read_text(encoding="utf-8"), found.parent)
 
 
-def run_mineru(pdf: Path, work: Path, control: JobControl | None = None, progress: Progress = lambda _t: None, pages: int = 0) -> dict[int, _Page]:
+def run_mineru(pdf: Path, work: Path, control: JobControl | None = None, watch: Callable[[int, int], None] = lambda _d, _t: None) -> dict[int, _Page]:
+    """``watch`` gets ``(done, total)`` of MinerU's progress bar as it moves."""
     out = work / "mineru"
     out.mkdir(parents=True, exist_ok=True)
     shown = [None]
 
-    def watch(tail: str) -> None:
+    def look(tail: str) -> None:
         found = mineru_progress(tail)
         if found and found != shown[0]:
             shown[0] = found
-            done, total = found
-            progress(f"MinerU: page {done} of {total}…" if total == pages else f"MinerU: reading the pages' text, {done} of {total} blocks…")
+            watch(*found)
 
-    _run([str(executable(MINERU)), "-p", str(pdf), "-o", str(out), "-b", "vlm-auto-engine", "-l", "latin"], work / "mineru.log", control, watch)
+    _run([str(executable(MINERU)), "-p", str(pdf), "-o", str(out), "-b", "vlm-auto-engine", "-l", "latin"], work / "mineru.log", control, look)
     found = next(iter(sorted(out.rglob("*_content_list.json"))), None)
     if found is None:
         raise ConverterError("MinerU wrote no content list.")
@@ -320,54 +323,119 @@ class DocumentResult:
     kept: list[int] = field(default_factory=list)  # pages whose earlier version matched the PDF better
 
 
-def convert_pages(
-    document: "DocumentView",
-    pages: list[int],
-    figures: Path,
-    control: JobControl | None = None,
-    progress: Progress = lambda _t: None,
-    earlier: dict[int, str] | None = None,
-) -> DocumentResult:
-    """``earlier`` holds pages converted before, which stay unless the new version scores higher."""
-    earlier = earlier or {}
+@dataclass
+class _Document:
+    """What a document's pages are scored against, worked out once per run."""
+
+    view: "DocumentView"
+    raw: dict[int, str]
+    common: frozenset[str]
+    offset: int
+    earlier: dict[int, str]  # pages converted before, which stay unless the new version scores higher
+
+
+def _prepare(document: "DocumentView", earlier: dict[int, str]) -> _Document:
     raw = {p.number: p.raw_text for p in document.pages}
-    with pymupdf.open(document.path) as source, tempfile.TemporaryDirectory(prefix="universe-convert-") as temp:
-        work = Path(temp)
-        if not raw:
+    if not raw:
+        with pymupdf.open(document.path) as source:
             raw = {n: source[n - 1].get_text() for n in range(1, source.page_count + 1)}
-        kinds = {n: classify(source[n - 1]) for n in pages}
-        common = pdf_conversion.common_terms(list(raw.values()))
-        offset = pdf_conversion.printed_page_offset([raw.get(n, "") for n in range(1, source.page_count + 1)])
-        progress(f"{document.ref}: Marker reads {len(pages)} page(s)…")
-        _subset(source, pages, work / "marker.pdf")
+    texts = [raw.get(n, "") for n in range(1, document.page_count + 1)]
+    return _Document(document, raw, pdf_conversion.common_terms(texts), pdf_conversion.printed_page_offset(texts), earlier)
+
+
+Step = Callable[[str, float], None]  # what runs now, and how far the batch is, 0 to 1
+MARKER_SHARE, LAYOUT_SHARE = 0.1, 0.7  # of a batch's time: Marker until 0.1, MinerU's layout pass until 0.7, its text pass the rest
+
+
+def convert_batch(items: list[tuple[_Document, int]], figures: Path, control: JobControl | None = None, step: Step = lambda _t, _f: None) -> dict[str, DocumentResult]:
+    """Pages from one or more documents, through one Marker run and at most one MinerU run, so
+    the models load once per batch, not once per document."""
+    results: dict[str, DocumentResult] = {}
+    with ExitStack() as stack:
+        work = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="universe-convert-")))
+        paths = {doc.view.key: doc.view.path for doc, _n in items}
+        sources = {key: stack.enter_context(pymupdf.open(path)) for key, path in paths.items()}
+        pages = [(sources[doc.view.key], number) for doc, number in items]
+        kinds = [classify(source[number - 1]) for source, number in pages]
+        with_mineru = executable(MINERU).exists()
+        step(f"Marker reads {len(items)} page{'s' * (len(items) != 1)}", 0.0)
+        _subset(pages, work / "marker.pdf")
         marker = run_marker(work / "marker.pdf", work, control)
 
-        def doubtful(index: int, number: int) -> bool:  # Marker lost what the PDF says, e.g. a slide forced into a table
-            check = pdf_conversion.check_page(raw.get(number, ""), marker[index].markdown, number, common, offset) if index in marker else None
-            return check is None or not (check.ok or check.scanned)
+        def doubtful(index: int) -> bool:  # Marker lost what the PDF says, e.g. a slide forced into a table
+            doc, number = items[index]
+            if index not in marker:
+                return True
+            check = pdf_conversion.check_page(doc.raw.get(number, ""), marker[index].markdown, number, doc.common, doc.offset)
+            return not (check.ok or check.scanned)
 
-        second = [n for i, n in enumerate(pages) if kinds[n] in SECOND_OPINION or doubtful(i, n)] if executable(MINERU).exists() else []
+        second = [i for i in range(len(items)) if kinds[i] in SECOND_OPINION or doubtful(i)] if with_mineru else []
         mineru: dict[int, _Page] = {}
         if second:
-            progress(f"{document.ref}: MinerU reads {len(second)} page(s) with formulas, tables or doubts…")
-            _subset(source, second, work / "mineru.pdf")
-            mineru = run_mineru(work / "mineru.pdf", work, control, lambda text: progress(f"{document.ref}: {text}"), len(second))
+            pages_word = f"{len(second)} page{'s' * (len(second) != 1)}"
 
-        engines, parts, kept = {}, [], []
-        for index, number in enumerate(pages):
+            def watch(done: int, total: int) -> None:
+                if total == len(second):
+                    step(f"MinerU double-checks {pages_word} with formulas, tables or text Marker missed: page {done} of {total}", MARKER_SHARE + (LAYOUT_SHARE - MARKER_SHARE) * done / total)
+                else:
+                    step(f"MinerU reads the text on those {pages_word}: part {done} of {total}", LAYOUT_SHARE + (1 - LAYOUT_SHARE) * done / total)
+
+            step(f"MinerU double-checks {pages_word} with formulas, tables or text Marker missed: starting", MARKER_SHARE)
+            _subset([pages[i] for i in second], work / "mineru.pdf")
+            found = run_mineru(work / "mineru.pdf", work, control, watch)
+            mineru = {second[position]: page for position, page in found.items() if position < len(second)}
+
+        parts: dict[str, list[str]] = {}
+        for index, (doc, number) in enumerate(items):
+            result = results.setdefault(doc.view.key, DocumentResult("", {}, {}))
+            result.kinds[number] = kinds[index]
             versions = {MARKER: marker[index]} if index in marker else {}
-            if number in second and second.index(number) in mineru:
-                versions[MINERU] = mineru[second.index(number)]
+            if index in mineru:
+                versions[MINERU] = mineru[index]
             if not versions:
                 continue  # missing stays missing, and the report says so
-            engine, markdown = pick(raw.get(number, ""), {e: p.markdown for e, p in versions.items()}, number, common, offset)
-            if number in earlier and score(raw.get(number, ""), earlier[number], number, common, offset) >= score(raw.get(number, ""), markdown, number, common, offset):
-                kept.append(number)
+            raw = doc.raw.get(number, "")
+            engine, markdown = pick(raw, {e: p.markdown for e, p in versions.items()}, number, doc.common, doc.offset)
+            if number in doc.earlier and score(raw, doc.earlier[number], number, doc.common, doc.offset) >= score(raw, markdown, number, doc.common, doc.offset):
+                result.kept.append(number)
                 continue
-            engines[number] = engine
-            body = _keep_figures(versions[engine], figures, document.ref, number)
-            parts.append(f"{pdf_conversion.stamp(document.ref, number)}\n\n{body}")
-    return DocumentResult("\n\n".join(parts), engines, kinds, kept)
+            result.engines[number] = engine
+            body = _keep_figures(versions[engine], figures, doc.view.ref, number)
+            parts.setdefault(doc.view.key, []).append(f"{pdf_conversion.stamp(doc.view.ref, number)}\n\n{body}")
+    for key, texts in parts.items():
+        results[key].text = "\n\n".join(texts)
+    return results
+
+
+@dataclass(frozen=True)
+class Status:
+    """What the panel shows while converting."""
+
+    text: str  # two lines: the whole run, then what runs now
+    fraction: float  # of the whole run, 0 to 1
+
+
+def _duration(seconds: float) -> str:
+    minutes = round(seconds / 60)
+    if minutes < 1:
+        return "less than a minute"
+    return f"about {minutes} min" if minutes < 90 else f"about {minutes / 60:.1f} h"
+
+
+class _Tracker:
+    """Turns a batch's progress into progress through the whole run, with the time left."""
+
+    def __init__(self, total: int, report: Callable[[Status], None]) -> None:
+        self.total, self.done, self.report = max(total, 1), 0, report
+        self.started = time.monotonic()
+
+    def show(self, step: str, within: float, batch: int) -> None:
+        fraction = min(1.0, (self.done + within * batch) / self.total)
+        elapsed = time.monotonic() - self.started
+        head = f"{fraction:.0%} of {self.total} page{'s' * (self.total != 1)}"
+        if fraction >= 0.03 and elapsed >= 30:
+            head += f" · {_duration(elapsed / fraction * (1 - fraction))} left"
+        self.report(Status(f"{head}\n{step}", fraction))
 
 
 def convert_subject(view: "SubjectView", control: JobControl | None = None, progress: Progress = lambda _t: None, redo: str = MISSING) -> pdf_conversion.ConversionReport:
@@ -393,24 +461,34 @@ def pages_to_convert(document: "DocumentView", done: dict[int, str], redo: str =
 def _convert_documents(view: "SubjectView", control: JobControl | None, progress: Progress, redo: str = MISSING) -> pdf_conversion.ConversionReport:
     total = pdf_conversion.ConversionReport()
     figures = view.subject.converted_dir / "figures"
+    items: list[tuple[_Document, int]] = []
     for document in view.documents:
         if document.excluded or not document.page_count:
             continue
         done = pdf_conversion.load_pages(view.subject, document.key)
         todo = pages_to_convert(document, done, redo)
-        for first in range(0, len(todo), CHUNK_PAGES):
-            if control is not None:
-                control.checkpoint()
-            chunk = todo[first : first + CHUNK_PAGES]
-            try:
-                result = convert_pages(document, chunk, figures, control, progress, {n: done[n] for n in chunk if n in done})
-            except ConverterError as exc:
-                total.problems.append(f"{document.ref} {document.title}: {exc}")
-                break
+        if todo:
+            doc = _prepare(document, {n: done[n] for n in todo if n in done})
+            items += [(doc, n) for n in todo]
+    tracker = _Tracker(len(items), progress)
+    for first in range(0, len(items), CHUNK_PAGES):
+        if control is not None:
+            control.checkpoint()
+        batch = items[first : first + CHUNK_PAGES]
+        try:
+            results = convert_batch(batch, figures, control, lambda text, within: tracker.show(text, within, len(batch)))
+        except ConverterError as exc:
+            refs = ", ".join(dict.fromkeys(f"{doc.view.ref} {doc.view.title}" for doc, _n in batch))
+            total.problems.append(f"{refs}: {exc}")
+            break
+        tracker.show("Saving…", 1.0, len(batch))
+        for doc, _n in batch:
+            result = results.pop(doc.view.key, None)
+            if result is None:
+                continue  # already saved
             if result.text:
                 total.merge(pdf_conversion.import_converted(view, result.text))
-                kept = sum(engine == MINERU for engine in result.engines.values())
-                progress(f"{document.ref}: saved {len(result.engines)} page(s), MinerU's version on {kept}.")
             if result.kept:
-                total.problems.append(f"{document.ref}: kept the earlier version of {pdf_conversion.page_list(result.kept)}, which matches the PDF better.")
+                total.problems.append(f"{doc.view.ref}: kept the earlier version of {pdf_conversion.page_list(result.kept)}, which matches the PDF better.")
+        tracker.done += len(batch)
     return total
