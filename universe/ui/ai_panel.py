@@ -1,4 +1,4 @@
-"""AI Tutor pane: hosts the Claude, Practice, Guide and Progress tabs, and Search.
+"""AI Tutor pane: hosts the Tutor chat, the Claude, Practice, Guide and Progress tabs, and Search.
 
 It binds to the subject, not to a lecture: everything here works with no lecture open.
 """
@@ -31,6 +31,7 @@ from .guide_panel import GuidePanel
 from .practice_panel import PracticePanel
 from .progress_panel import ProgressPanel
 from .segmented import SegmentedTabs
+from .tutor_panel import TutorPanel
 
 ROLE = Qt.ItemDataRole.UserRole
 DOCUMENT_SOURCES = ("slides", "exams", "exercises")  # a hit's source is the folder of its PDF
@@ -54,15 +55,18 @@ class AIPanel(QWidget):
         self.practice = PracticePanel(settings=settings)
         self.guide = GuidePanel(professors)
         self.progress = ProgressPanel(professors)
+        self.tutor = TutorPanel(settings=settings)
         self.tabs = QTabWidget()
+        self.tabs.addTab(self.tutor, "Tutor")
         self.tabs.addTab(self.claude, "Claude")
         self.tabs.addTab(self.practice, "Practice")
         self.tabs.addTab(self.guide, "Guide")
         self.tabs.addTab(self.progress, "Progress")
         self.tabs.addTab(self._build_search_tab(), "Search")
 
-        for panel in (self.claude, self.practice, self.guide, self.progress):
+        for panel in (self.tutor, self.claude, self.practice, self.guide, self.progress):
             panel.status.connect(self.status)
+        self.tutor.hitActivated.connect(self.hitActivated)
         for panel in (self.claude, self.practice, self.guide):
             panel.sourceActivated.connect(self.sourceActivated)
         self.claude.replyImported.connect(self._on_reply_imported)
@@ -110,23 +114,23 @@ class AIPanel(QWidget):
         self.subject, self.lecture = subject, lecture
         self.tabs.setEnabled(subject is not None)
         self.tab_bar.setEnabled(subject is not None)
-        for panel in (self.claude, self.practice, self.guide, self.progress):
+        for panel in (self.tutor, self.claude, self.practice, self.guide, self.progress):
             panel.set_scope(subject, lecture)
 
     def refresh(self) -> None:
         """Something the tabs read changed; each re-reads once it is on screen."""
-        for panel in (self.claude, self.practice, self.guide, self.progress):
+        for panel in (self.tutor, self.claude, self.practice, self.guide, self.progress):
             panel.mark_changed()
 
     def refresh_except_progress(self) -> None:
-        for panel in (self.claude, self.practice, self.guide):
+        for panel in (self.tutor, self.claude, self.practice, self.guide):
             panel.mark_changed()
 
     def set_events(self, events: list) -> None:
         self.progress.set_events(events)
 
     def _on_reply_imported(self) -> None:
-        for panel in (self.practice, self.guide, self.progress):
+        for panel in (self.tutor, self.practice, self.guide, self.progress):
             panel.mark_changed()
         self.replyImported.emit()
 

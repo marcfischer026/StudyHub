@@ -109,8 +109,15 @@ def find_server(settings: Settings) -> tuple[str, str]:
 
 def chat(url: str, model: str, prompt: str, timeout: float = 600, ttl: int = 0) -> str:
     """``ttl``: seconds LM Studio may keep a model it loads on demand (JIT) for this request."""
-    messages = [{"role": "user", "content": prompt}, NO_THINK_PREFILL]
-    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 3000}
+    return complete(url, model, [{"role": "user", "content": prompt}], timeout=timeout, ttl=ttl)
+
+
+def complete(
+    url: str, model: str, messages: list[dict], timeout: float = 600, ttl: int = 0, temperature: float = 0.1, max_tokens: int = 3000
+) -> str:
+    """A whole conversation (system, user and assistant turns); the reply to its last turn."""
+    messages = [*messages, NO_THINK_PREFILL]
+    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     if ttl:
         payload["ttl"] = ttl  # LM Studio: unload this JIT-loaded model after ttl idle seconds
     body = json.dumps(payload).encode()
