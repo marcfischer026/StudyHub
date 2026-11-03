@@ -173,6 +173,28 @@ class ConvertTests(Fixture):
         self.assertIn("out of memory", report.problems[0])
 
 
+    def test_converting_again_keeps_a_page_that_matches_the_pdf_better(self):
+        make_pdf(self.lecture.dir("slides") / "Deck.pdf", ["Kasse 900 und Bank 14100 am Stichtag", "Inventur ist eine Bestandsaufnahme"])
+        view = self.view()
+        pdf_conversion.import_converted(view, "[[SL01 p.1]]\nKasse 900 und Bank 14100 am Stichtag\n\n[[SL01 p.2]]\nInventur\n")
+        view = self.view()
+        document = view.documents[0]
+        done = pdf_conversion.load_pages(self.subject, document.key)
+        self.assertEqual(local_conversion.pages_to_convert(document, done), [])
+        self.assertEqual(local_conversion.pages_to_convert(document, done, local_conversion.WEAK), [2])
+        self.assertEqual(local_conversion.pages_to_convert(document, done, local_conversion.EVERY), [1, 2])
+        marker = {0: _Page("Kasse 900 am Stichtag", {}), 1: _Page("Inventur ist eine Bestandsaufnahme", {})}
+        with (
+            mock.patch.object(local_conversion, "installed", return_value=True),
+            mock.patch.object(local_conversion, "executable", return_value=Path("/nonexistent")),
+            mock.patch.object(local_conversion, "run_marker", return_value=marker),
+        ):
+            report = local_conversion.convert_subject(view, redo=local_conversion.EVERY)
+        pages = pdf_conversion.load_pages(self.subject, document.key)
+        self.assertIn("14100", pages[1])  # the earlier version stays
+        self.assertIn("Bestandsaufnahme", pages[2])  # the better new one replaces it
+        self.assertIn("kept the earlier version of p.1", report.summary())
+
 class HelperTests(unittest.TestCase):
     def test_only_processes_from_the_converters_folder_are_stopped(self):
         folder = str(local_conversion.converters_dir())

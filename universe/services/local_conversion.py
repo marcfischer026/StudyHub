@@ -27,7 +27,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -49,6 +49,7 @@ Progress = Callable[[str], None]
 
 MATH, TABLE, TEXT, SCAN = "math", "table", "text", "scan"
 MINERU, MARKER = "mineru", "marker"
+MISSING, WEAK, EVERY = "missing", "weak", "every"  # which pages convert_subject takes on
 SECOND_OPINION = (MATH, TABLE)  # page kinds MinerU always reads too
 CHUNK_PAGES = 40  # one converter run: loading the models costs a minute, a stop loses at most this
 MINERU_MARGIN = 0.02  # MinerU must beat Marker by this much; small differences are noise
@@ -316,9 +317,19 @@ class DocumentResult:
     text: str  # stamped like a chat tool's reply
     engines: dict[int, str]  # page → which converter's version was kept
     kinds: dict[int, str]
+    kept: list[int] = field(default_factory=list)  # pages whose earlier version matched the PDF better
 
 
-def convert_pages(document: "DocumentView", pages: list[int], figures: Path, control: JobControl | None = None, progress: Progress = lambda _t: None) -> DocumentResult:
+def convert_pages(
+    document: "DocumentView",
+    pages: list[int],
+    figures: Path,
+    control: JobControl | None = None,
+    progress: Progress = lambda _t: None,
+    earlier: dict[int, str] | None = None,
+) -> DocumentResult:
+    """``earlier`` holds pages converted before, which stay unless the new version scores higher."""
+    earlier = earlier or {}
     raw = {p.number: p.raw_text for p in document.pages}
     with pymupdf.open(document.path) as source, tempfile.TemporaryDirectory(prefix="universe-convert-") as temp:
         work = Path(temp)
@@ -342,45 +353,57 @@ def convert_pages(document: "DocumentView", pages: list[int], figures: Path, con
             _subset(source, second, work / "mineru.pdf")
             mineru = run_mineru(work / "mineru.pdf", work, control, lambda text: progress(f"{document.ref}: {text}"), len(second))
 
-        engines, parts = {}, []
+        engines, parts, kept = {}, [], []
         for index, number in enumerate(pages):
             versions = {MARKER: marker[index]} if index in marker else {}
             if number in second and second.index(number) in mineru:
                 versions[MINERU] = mineru[second.index(number)]
             if not versions:
                 continue  # missing stays missing, and the report says so
-            engine, _ = pick(raw.get(number, ""), {e: p.markdown for e, p in versions.items()}, number, common, offset)
+            engine, markdown = pick(raw.get(number, ""), {e: p.markdown for e, p in versions.items()}, number, common, offset)
+            if number in earlier and score(raw.get(number, ""), earlier[number], number, common, offset) >= score(raw.get(number, ""), markdown, number, common, offset):
+                kept.append(number)
+                continue
             engines[number] = engine
             body = _keep_figures(versions[engine], figures, document.ref, number)
             parts.append(f"{pdf_conversion.stamp(document.ref, number)}\n\n{body}")
-    return DocumentResult("\n\n".join(parts), engines, kinds)
+    return DocumentResult("\n\n".join(parts), engines, kinds, kept)
 
 
-def convert_subject(view: "SubjectView", control: JobControl | None = None, progress: Progress = lambda _t: None) -> pdf_conversion.ConversionReport:
-    """Every page still without Markdown, except from excluded documents. Saved run by run, so a
-    stop or an error keeps what was finished."""
+def convert_subject(view: "SubjectView", control: JobControl | None = None, progress: Progress = lambda _t: None, redo: str = MISSING) -> pdf_conversion.ConversionReport:
+    """Every page still without Markdown, except from excluded documents; with ``redo`` WEAK also
+    the pages that do not match the PDF, with EVERY all pages. A page converted before keeps its
+    version unless the new one matches the PDF better. Saved run by run, so a stop or an error
+    keeps what was finished."""
     if not installed():
         raise ConverterError("The local converters are not installed. See README → Local PDF conversion.")
     try:
-        return _convert_documents(view, control, progress)
+        return _convert_documents(view, control, progress, redo)
     finally:
         stop_helpers()
 
 
-def _convert_documents(view: "SubjectView", control: JobControl | None, progress: Progress) -> pdf_conversion.ConversionReport:
+def pages_to_convert(document: "DocumentView", done: dict[int, str], redo: str = MISSING) -> list[int]:
+    if redo == EVERY:
+        return list(range(1, document.page_count + 1))
+    weak = {p.number for p in document.pages if p.check is not None and not p.check.ok} if redo == WEAK else set()
+    return [n for n in range(1, document.page_count + 1) if n not in done or n in weak]
+
+
+def _convert_documents(view: "SubjectView", control: JobControl | None, progress: Progress, redo: str = MISSING) -> pdf_conversion.ConversionReport:
     total = pdf_conversion.ConversionReport()
     figures = view.subject.converted_dir / "figures"
     for document in view.documents:
         if document.excluded or not document.page_count:
             continue
         done = pdf_conversion.load_pages(view.subject, document.key)
-        missing = [n for n in range(1, document.page_count + 1) if n not in done]
-        for first in range(0, len(missing), CHUNK_PAGES):
+        todo = pages_to_convert(document, done, redo)
+        for first in range(0, len(todo), CHUNK_PAGES):
             if control is not None:
                 control.checkpoint()
-            chunk = missing[first : first + CHUNK_PAGES]
+            chunk = todo[first : first + CHUNK_PAGES]
             try:
-                result = convert_pages(document, chunk, figures, control, progress)
+                result = convert_pages(document, chunk, figures, control, progress, {n: done[n] for n in chunk if n in done})
             except ConverterError as exc:
                 total.problems.append(f"{document.ref} {document.title}: {exc}")
                 break
@@ -388,4 +411,6 @@ def _convert_documents(view: "SubjectView", control: JobControl | None, progress
                 total.merge(pdf_conversion.import_converted(view, result.text))
                 kept = sum(engine == MINERU for engine in result.engines.values())
                 progress(f"{document.ref}: saved {len(result.engines)} page(s), MinerU's version on {kept}.")
+            if result.kept:
+                total.problems.append(f"{document.ref}: kept the earlier version of {pdf_conversion.page_list(result.kept)}, which matches the PDF better.")
     return total

@@ -410,6 +410,12 @@ class ClaudePanel(ScopedPanel):
             if local_conversion.installed()
             else "Not installed yet: see README → Local PDF conversion"
         )
+        self.redo_local_btn = QPushButton("Convert again")
+        self.redo_local_btn.setToolTip("Reads converted pages once more; a page keeps its earlier version if that matches the PDF better")
+        redo_menu = QMenu(self.redo_local_btn)
+        self.redo_weak_action = redo_menu.addAction("Pages to check", lambda: self.convert_local(local_conversion.WEAK))
+        redo_menu.addAction("Every page", lambda: self.convert_local(local_conversion.EVERY))
+        self.redo_local_btn.setMenu(redo_menu)
         self.stop_local_btn = self._button("Stop", self.stop_local, hidden=True)
         self.pdf_report = text_label(selectable=True)
         self.pdf_report.hide()
@@ -419,7 +425,7 @@ class ClaudePanel(ScopedPanel):
             "1 · PDFs to Markdown",
             text_label("Marker and MinerU on this Mac, or Gemini and Copilot, turn the PDFs into Markdown, so Claude reads formulas, tables and graphics too.", muted=True),
             self.pdf_status,
-            button_row(self.convert_local_btn, self.stop_local_btn),
+            button_row(self.convert_local_btn, self.redo_local_btn, self.stop_local_btn),
             button_row(
                 self.export_pdfs_btn,
                 self._button("Paste result", self.paste_conversion),
@@ -624,6 +630,7 @@ class ClaudePanel(ScopedPanel):
         self.pdf_status.setText(conversion_status(view))
         self.export_pdfs_btn.setEnabled(bool(view.documents_for_export))
         self.convert_local_btn.setEnabled(bool(view.documents_for_export) and local_conversion.installed() and self._local_control is None)
+        self._update_redo(view)
         count = plan.side_talk_lines
         self.side_talk.label.setText(f"Also send {count} line{'s' * (count != 1)} of other voices sorted out as side talk (may include classmates' private talk)")
         self.side_talk.setVisible(count > 0)
@@ -662,7 +669,15 @@ class ClaudePanel(ScopedPanel):
 
         self._run("Writing stamped PDFs…", lambda: pdf_conversion.export_pdfs(self._load(subject)), done)
 
-    def convert_local(self) -> None:
+    def _update_redo(self, view: SubjectView | None) -> None:
+        documents = view.documents_for_export if view is not None else ()
+        weak = sum(1 for d in documents for p in d.pages if p.check is not None and not p.check.ok)
+        self.redo_weak_action.setText(f"Pages to check ({weak})")
+        self.redo_weak_action.setEnabled(weak > 0)
+        converted = any(d.converted_pages for d in documents)
+        self.redo_local_btn.setEnabled(converted and local_conversion.installed() and self._local_control is None)
+
+    def convert_local(self, redo: str = local_conversion.MISSING) -> None:
         subject = self.subject
         if subject is None or self._local_control is not None:
             return
@@ -670,7 +685,7 @@ class ClaudePanel(ScopedPanel):
         self._set_local_running(True)
 
         def job():
-            return local_conversion.convert_subject(self._load(subject), control, self.localProgress.emit)
+            return local_conversion.convert_subject(self._load(subject), control, self.localProgress.emit, redo)
 
         def done(report: pdf_conversion.ConversionReport) -> None:
             self._local_ended()
@@ -692,6 +707,10 @@ class ClaudePanel(ScopedPanel):
     def _set_local_running(self, running: bool) -> None:
         self.convert_local_btn.setEnabled(not running and local_conversion.installed())
         self.stop_local_btn.setVisible(running)
+        if running:
+            self.redo_local_btn.setEnabled(False)
+        else:
+            self._update_redo(self.view)
 
     def _local_ended(self) -> None:
         self._local_control = None

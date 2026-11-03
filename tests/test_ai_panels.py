@@ -175,6 +175,21 @@ class ClaudeTabTests(Base):
         wait_for(self.panel)
         self.assertIn("1 of 5 pages", self.panel.pdf_status.text())
 
+    def test_convert_again_offers_the_pages_to_check(self):
+        with mock.patch.object(claude_panel.local_conversion, "installed", return_value=True):
+            self.assertFalse(self.panel.redo_local_btn.isEnabled())  # nothing converted yet
+            QGuiApplication.clipboard().setText("[[SL01 p.1]]\nBilanz\n")
+            self.panel.paste_conversion()
+            wait_for(self.panel)
+            self.panel.refresh()
+            wait_for(self.panel)
+            self.assertTrue(self.panel.redo_local_btn.isEnabled())
+            self.assertEqual(self.panel.redo_weak_action.text(), "Pages to check (1)")
+            with mock.patch.object(claude_panel.local_conversion, "convert_subject", return_value=pdf_conversion.ConversionReport()) as convert:
+                self.panel.redo_weak_action.trigger()
+                wait_for(self.panel)
+        self.assertEqual(convert.call_args.args[3], claude_panel.local_conversion.WEAK)
+
     def test_paste_without_stamps_says_why(self):
         QGuiApplication.clipboard().setText("Einfach nur Text")
         self.panel.paste_conversion()
