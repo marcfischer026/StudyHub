@@ -27,7 +27,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from tests.test_claude_reply import END, HEAD, MC, OBJECTIVE, PASSIV, TOPIC, build_subject, jsonl  # noqa: E402
 from universe.professors import ProfessorProfile, ProfessorStore  # noqa: E402
-from universe.services import pdf_conversion, relevance, subject_model  # noqa: E402
+from universe.services import answer_check, local_llm, pdf_conversion, relevance, subject_model  # noqa: E402
 from universe.services.claude_reply import check_reply, parse_reply  # noqa: E402
 from universe.services.study_store import StudyStore  # noqa: E402
 from universe.services.transcriber import Segment, Transcript  # noqa: E402
@@ -63,6 +63,16 @@ PROF = {"t": "prof", "prof": "PR1", "field": "focus_areas", "value": "Bilanzen",
 DOC_NOTE = {"t": "doc_note", "doc": "EX02", "issue": "wrong_subject", "detail": "Anderes Fach"}
 COVERAGE = {"t": "coverage", "lecture": "L01", "covered": ["SL01.p1-4", "R01", "R02"], "uncovered": []}
 FULL_REPLY = jsonl(TOPIC, OBJECTIVE, OBJECTIVE_2, MC, TF, SHORT, CALC, CARD, GUIDE, SAID, CONFLICT, NOTE_FIX, PROF, DOC_NOTE, COVERAGE)
+
+
+def wait_until(done) -> None:
+    deadline = time.monotonic() + 60
+    while not done():
+        app.processEvents()
+        if time.monotonic() > deadline:
+            raise TimeoutError("worker did not finish")
+        time.sleep(0.005)
+    app.processEvents()
 
 
 def wait_for(panel: ClaudePanel) -> None:
@@ -714,6 +724,72 @@ class PracticeTabTests(Base):
         self.panel.start_chosen()
         self.assertEqual(self.panel.mode, "lecture")
         self.assertTrue(self.panel.session)
+
+
+class RecheckTests(Base):
+    """The local AI looks again at answers the automatic check marked wrong; the student decides."""
+
+    def setUp(self):
+        super().setUp()
+        self.panel = PracticePanel(settings=Settings(ai_recheck=True))
+        self.addCleanup(self.panel.deleteLater)
+        self.panel.set_scope(self.subject, None)
+        second = {**CALC, "id": "q_calc2", "stem": "Was ist 1000 + 200?"}
+        self.seed(jsonl(TOPIC, OBJECTIVE, OBJECTIVE_2, CALC, second))
+
+    def answer(self, verdict: str, text: str = "1,2 Tsd."):
+        reply = answer_check.Recheck(verdict, "Gleicher Wert, anders geschrieben.")
+        with mock.patch.object(answer_check, "recheck", return_value=reply) as asked:
+            self.panel.start()
+            self.panel.answer_line.setText(text)
+            self.panel.sure.click()
+            wait_until(lambda: not self.panel._workers)
+        return asked
+
+    def test_a_wrong_mark_the_ai_doubts_can_be_counted(self):
+        asked = self.answer("correct")
+        self.assertEqual(asked.call_args.args[1], "1,2 Tsd.")
+        self.assertIn("Not quite", self.panel.feedback.text())
+        self.assertIn("probably correct", self.panel.recheck_label.text())
+        self.assertEqual(len(self.panel.session), 2)  # a second chance was queued
+        self.panel.accept_ai_btn.click()
+        grade = next(e for e in self.store.events() if e["type"] == "grade")
+        self.assertEqual((grade["score"], grade["by"], grade["attempt"]), (1.0, "ai", self.attempts()[0]["id"]))
+        self.assertEqual(len(self.panel.session), 1)  # no second chance for a right answer
+        self.assertIn("Correct", self.panel.feedback.text())
+        self.assertTrue(self.panel.accept_ai_btn.isHidden())
+
+    def test_the_ai_agreeing_changes_nothing(self):
+        self.answer("wrong")
+        self.assertIn("agrees", self.panel.recheck_label.text())
+        self.assertTrue(self.panel.accept_ai_btn.isHidden())
+        self.assertFalse(any(e["type"] == "grade" for e in self.store.events()))
+
+    def test_a_right_answer_is_not_rechecked(self):
+        asked = self.answer("correct", "1200")
+        asked.assert_not_called()
+        self.assertTrue(self.panel.recheck_label.isHidden())
+
+    def test_switched_off_asks_nothing(self):
+        self.panel.settings = Settings(ai_recheck=False)
+        asked = self.answer("correct")
+        asked.assert_not_called()
+
+    def test_no_local_ai_says_so(self):
+        with mock.patch.object(answer_check, "recheck", side_effect=local_llm.LocalLLMUnavailable("No local AI server found.")):
+            self.panel.start()
+            self.panel.answer_line.setText("13")
+            self.panel.sure.click()
+            wait_until(lambda: not self.panel._workers)
+        self.assertIn("no local AI running", self.panel.recheck_label.text())
+
+    def test_reply_parsing(self):
+        self.assertEqual(answer_check.parse('```json\n{"verdict": "Correct", "reason": "same"}\n```'), answer_check.Recheck("correct", "same"))
+        self.assertEqual(answer_check.parse("I think it is partly right").verdict, "partly")
+        self.assertEqual(answer_check.parse("no idea").verdict, "wrong")
+        prompt = answer_check.prompt_for(CALC, "1,2 Tsd.")
+        self.assertIn("1200 € (tolerance 0.5)", prompt)
+        self.assertIn("Student's answer: 1,2 Tsd.", prompt)
 
 
 class GuideTabTests(Base):

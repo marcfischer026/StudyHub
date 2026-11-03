@@ -51,7 +51,7 @@ class AIPanel(QWidget):
         self.professors = professors
 
         self.claude = ClaudePanel(professors, settings=settings)
-        self.practice = PracticePanel()
+        self.practice = PracticePanel(settings=settings)
         self.guide = GuidePanel(professors)
         self.progress = ProgressPanel(professors)
         self.tabs = QTabWidget()

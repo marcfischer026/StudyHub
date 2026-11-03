@@ -95,6 +95,7 @@ class Settings:
     local_classify: bool = True  # sort transcripts with a local LLM after transcription, if one is running
     local_llm_url: str = ""  # OpenAI-compatible base URL, e.g. http://localhost:1234/v1; "" = probe usual ports
     local_llm_model: str = ""  # "" = best installed chat model (local_llm.PREFERRED_MODELS)
+    ai_recheck: bool = True  # practice: a local LLM looks again at answers the automatic check marked wrong
     local_llm_unload_after: int = 300  # seconds without AI work before the model is unloaded; 0 = keep loaded
     live_check: bool = True  # while recording, transcribe a few seconds every 30 s to show what the mic understands
     speaker_model: str = ""  # speaker-embedding .onnx in models_dir(); "" = best found (needs sherpa-onnx)

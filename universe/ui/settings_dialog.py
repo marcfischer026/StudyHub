@@ -140,6 +140,8 @@ class SettingsDialog(QDialog):
         s = self.settings
         self.local_classify = QCheckBox("Sort new transcripts with a local AI model")
         self.local_classify.setChecked(s.local_classify)
+        self.ai_recheck = QCheckBox("Practice: let the local AI re-check answers marked wrong")
+        self.ai_recheck.setChecked(s.ai_recheck)
         self.local_llm_url = QLineEdit(s.local_llm_url, placeholderText="Automatic — try ports 1234, 8080, 11434")
         self.local_llm_model = QComboBox(editable=True)
         self.local_llm_model.addItem("Automatic — best installed", "")
@@ -161,6 +163,7 @@ class SettingsDialog(QDialog):
         self.unload_after.setValue(s.local_llm_unload_after // 60)
         return _form(
             (None, self.local_classify),
+            (None, self.ai_recheck),
             ("Server URL", self.local_llm_url),
             ("Model", self.local_llm_model),
             (None, test),
@@ -359,6 +362,7 @@ class SettingsDialog(QDialog):
         s.auto_transcribe = self.auto_transcribe.isChecked()
         s.input_device = self.input_device.currentData()
         s.local_classify = self.local_classify.isChecked()
+        s.ai_recheck = self.ai_recheck.isChecked()
         s.local_llm_url = self.local_llm_url.text().strip()
         s.local_llm_model = self._model_value()
         s.local_llm_unload_after = self.unload_after.value() * 60

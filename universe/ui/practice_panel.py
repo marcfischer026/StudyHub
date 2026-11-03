@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from shiboken6 import isValid
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -27,11 +28,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..services import practice
+from ..config import Settings
+from ..services import answer_check, practice
 from ..services.study_store import StudyStore
 from ..storage import Lecture, Subject
 from .claude_panel import ScopedPanel, WrapButton, button_row, exam_date, same_subject, scrolling, text_label
 from .style import DANGER, SUCCESS
+from .workers import Worker, run
 
 RIGHT = SUCCESS
 WRONG = DANGER
@@ -63,8 +66,9 @@ class PracticePanel(ScopedPanel):
     sourceActivated = Signal(dict)  # a durable source
     answered = Signal()  # the history grew
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings: Settings | None = None):
         super().__init__(parent)
+        self.settings = settings  # None: no AI re-check (tests, or no local AI wanted)
         self.store: StudyStore | None = None
         self.session: list[dict] = []
         self.position = 0
@@ -80,6 +84,9 @@ class PracticePanel(ScopedPanel):
         self._shown_at = 0.0
         self._confidence = ""
         self._reviewing: list[Result] = []  # mock answers the student still has to grade
+        self._requeued: dict | None = None  # the second chance a wrong answer brought into the session
+        self._recheck: tuple[Result, answer_check.Recheck] | None = None
+        self._workers: set[Worker] = set()
 
         self.header = text_label()
         self.header.setObjectName("practiceHeader")
@@ -141,6 +148,9 @@ class PracticePanel(ScopedPanel):
         self.feedback = text_label(rich=True, selectable=True)
         self.feedback.setOpenExternalLinks(False)
         self.feedback.linkActivated.connect(self._open_link)
+        self.recheck_label = text_label(rich=True, selectable=True)
+        self.accept_ai_btn = QPushButton("Count it as correct")
+        self.accept_ai_btn.clicked.connect(self.accept_recheck)
         self.next_btn = QPushButton("Next", objectName="primaryButton")
         self.next_btn.clicked.connect(self.next_question)
         self.flag_btn = QPushButton("Question is wrong…")
@@ -165,8 +175,10 @@ class PracticePanel(ScopedPanel):
         column.addWidget(self.model_answer)
         column.addLayout(self.rubric_box)
         column.addWidget(self.rubric_save, 0, left)
-        for item in (self.grade_row, self.feedback, button_row(self.next_btn, self.flag_btn, self.end_btn)):
+        for item in (self.grade_row, self.feedback, self.recheck_label):
             column.addWidget(item)
+        column.addWidget(self.accept_ai_btn, 0, left)
+        column.addWidget(button_row(self.next_btn, self.flag_btn, self.end_btn))
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
@@ -360,6 +372,8 @@ class PracticePanel(ScopedPanel):
             self.confidence_title.setText("How sure are you? Your answer is checked when you press one.")
         self.save_free_btn.setVisible(not auto and self.is_mock)
         self._set_visible(self.model_answer, self.rubric_save, self.grade_row, self.feedback, self.next_btn, on=False)
+        self._set_visible(self.recheck_label, self.accept_ai_btn, on=False)
+        self._recheck = None
         self.flag_btn.show()
         self.end_btn.show()
         self.scroll.verticalScrollBar().setValue(0)
@@ -401,17 +415,84 @@ class PracticePanel(ScopedPanel):
         question = self.question
         ms = int((time.monotonic() - self._shown_at) * 1000)
         event = self.store.record_attempt(question, answer, score, confidence, self.hints, ms, self.mode, by)
-        self.results.append(Result(question, answer, score, event["id"], ungraded))
+        result = Result(question, answer, score, event["id"], ungraded)
+        self.results.append(result)
         self.answered_current = True
         knowledge = self.store.knowledge()
         self.cards = practice.replay(knowledge, self.store.events(), exam_date(self.subject))
+        self._requeued = None
         if not self.is_mock:
-            practice.requeue_again(knowledge, self.cards, self.session, self.position, question, event.get("rating", 0))
+            self._requeued = practice.requeue_again(knowledge, self.cards, self.session, self.position, question, event.get("rating", 0))
         self.answered.emit()
         if self.is_mock:
             self.next_question()
         else:
             self._show_feedback(answer, score)
+            if by == "auto" and score < practice.PASS and answer:
+                self._start_recheck(result)
+
+    # --- AI re-check --------------------------------------------------------
+
+    def _start_recheck(self, result: Result) -> None:
+        """The machine compares strings and numbers; the local model may see that it was right after all."""
+        settings = self.settings
+        if settings is None or not settings.ai_recheck:
+            return
+        self.recheck_label.setText("<i>Asking the local AI whether your answer might be right after all…</i>")
+        self.recheck_label.show()
+        worker = Worker(answer_check.recheck, result.question, result.answer, settings)
+        worker.setAutoDelete(False)
+        self._workers.add(worker)
+
+        def done(reply: answer_check.Recheck):
+            self._workers.discard(worker)
+            if isValid(self) and self._still_showing(result):
+                self._show_recheck(result, reply)
+
+        def failed(message: str):
+            self._workers.discard(worker)
+            if isValid(self) and self._still_showing(result):
+                unavailable = "No local AI" in message or "Local AI" in message
+                self.recheck_label.setText(
+                    "<i>AI re-check skipped: no local AI running (LM Studio).</i>" if unavailable else f"<i>AI re-check failed: {_text(message)}</i>"
+                )
+
+        worker.signals.finished.connect(done)
+        worker.signals.failed.connect(failed)
+        run(worker)
+
+    def _still_showing(self, result: Result) -> bool:
+        return bool(self.results) and self.results[-1] is result and self.in_session
+
+    def _show_recheck(self, result: Result, reply: answer_check.Recheck) -> None:
+        reason = f" {_text(reply.reason)}" if reply.reason else ""
+        if reply.verdict == "wrong":
+            self.recheck_label.setText(f"<b>AI re-check:</b> agrees, it is wrong.{reason}")
+            return
+        what = "correct" if reply.verdict == "correct" else "partly right"
+        self.recheck_label.setText(f"<b style='color:{RIGHT}'>AI re-check: probably {what}.</b>{reason}<br>Count it if you agree.")
+        self.accept_ai_btn.setText("Count it as correct" if reply.verdict == "correct" else "Count it as partly right")
+        self.accept_ai_btn.show()
+        self._recheck = (result, reply)
+
+    def accept_recheck(self) -> None:
+        """A grade event, like a self grade: history stays, its meaning changes."""
+        if self._recheck is None:
+            return
+        result, reply = self._recheck
+        self._recheck = None
+        score = 1.0 if reply.verdict == "correct" else PARTLY
+        result.score = score
+        self.store.append_event("grade", attempt=result.attempt, score=score, feedback=reply.reason, by="ai")
+        if self._requeued is not None and self._requeued in self.session[self.position + 1 :]:
+            self.session.remove(self._requeued)  # no second chance needed for a right answer
+        self._requeued = None
+        self.cards = practice.replay(self.store.knowledge(), self.store.events(), exam_date(self.subject))
+        self.answered.emit()
+        self.accept_ai_btn.hide()
+        self.feedback.setText(self._verdict(result.question, result.answer, score) + self._details(result.question))
+        self.recheck_label.setText(f"<i>Counted after the AI re-check.</i> {_text(reply.reason)}")
+        self.next_btn.setText("Next" if self.position + 1 < len(self.session) else "Finish")
 
     # --- free answers -------------------------------------------------------
 
